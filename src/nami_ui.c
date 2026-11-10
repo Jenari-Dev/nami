@@ -1634,7 +1634,7 @@ main(void) {
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) != 0) return 1;
     fonts_load();
     curl_global_init(CURL_GLOBAL_DEFAULT);
-    SDL_CreateThread(upd_check_thread, "upd_boot", NULL);   /* auto-check, non-blocking */
+    SDL_DetachThread(SDL_CreateThread(upd_check_thread, "upd_boot", NULL));   /* auto-check */
     SDL_Window *win = SDL_CreateWindow(
         "Nami", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
         SCREEN_W, SCREEN_H, SDL_WINDOW_FULLSCREEN);
@@ -1731,12 +1731,12 @@ main(void) {
                 } else if (it->kind == KIND_UPD_CHECK) {
                     if (g_upd_state == 0) {
                         g_upd_msg[0] = 0;
-                        SDL_CreateThread(upd_check_thread, "upd_check", NULL);
+                        SDL_DetachThread(SDL_CreateThread(upd_check_thread, "upd_check", NULL));
                     }
                 } else if (it->kind == KIND_UPD_INSTALL) {
                     if (g_upd_state == 0) {
                         g_upd_msg[0] = 0;
-                        SDL_CreateThread(upd_install_thread, "upd_install", NULL);
+                        SDL_DetachThread(SDL_CreateThread(upd_install_thread, "upd_install", NULL));
                     }
                 } else if (it->kind == KIND_ABOUT) {
                     g_about = !g_about;
@@ -1912,6 +1912,8 @@ main(void) {
 
     if (cover) SDL_DestroyTexture(cover);
     if (pad) SDL_GameControllerClose(pad);
+    curl_global_cleanup();
+    TTF_Quit();
     IMG_Quit();
     SDL_DestroyRenderer(ren);
     SDL_DestroyWindow(win);
