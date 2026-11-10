@@ -15,7 +15,7 @@ ran it on the 13.20 console and confirmed the stated result._
 ## Milestones
 | ID | What | Status |
 |----|------|--------|
-| M0 | toast + HTTP status page to PC | **built, NOT yet device-verified** |
+| M0 | toast + HTTP status page to PC | **VERIFIED on 13.20 (2026-11-10)** |
 | M1 | SDL2 window + pad input | not started |
 | M2 | title list + launch | not started |
 | M3 | settings | not started |
@@ -26,8 +26,10 @@ ran it on the 13.20 console and confirmed the stated result._
 - `src/main.c` - sends on-TV toast, then runs HTTP server (blocks).
 - `src/http_server.c` - single static page on :8080, close-per-request.
 - Build: `make` -> `nami.elf`. Links `-lSceNotification`.
-- **Open question (device):** does elfldr keep a blocking payload resident
-  so the socket stays up? If not, M1 moves the server onto its own thread.
+- **Resolved (device):** an Elf-Arsenal-launched blocking payload stays
+  resident; the socket stayed up across repeated requests (sub-ms 200s).
+  M1 still moves the server to its own thread so the SDL2 UI loop can run
+  alongside it.
 
 ## Decisions
 - UI stack: **SDL2 + Dear ImGui** first, skin into true XMB look later.
