@@ -58,7 +58,13 @@ all: $(BOOT_ELF) $(UI_ELF)
 $(BOOT_ELF): $(BOOT_SRCS)
 	$(CC) $(BOOT_CFLAGS) -o $@ $(BOOT_SRCS) $(BOOT_LDADD)
 
-$(UI_ELF): $(UI_SRCS)
+# .verstamp changes whenever VERSION does, forcing the UI to relink with the
+# new -DNAMI_VERSION (make can't see the -D value change on its own).
+.verstamp: FORCE
+	@echo "$(VERSION)" | cmp -s - $@ 2>/dev/null || echo "$(VERSION)" > $@
+.PHONY: FORCE
+
+$(UI_ELF): $(UI_SRCS) .verstamp
 	$(CC) $(UI_CFLAGS) -o $@ $(UI_SRCS) $(UI_LDADD)
 
 # M0 pipeline probe (toast + web status page).
