@@ -45,10 +45,24 @@ history and research/notes/ for deep dives.
   Nami's own keyboard (it already pops up).
 - Make text documents on desktop / in any folder (New Text File).
 
-## 🎯 XMB PHASE (current focus)
-- Real original icons in the category row (Games/Payloads/Files/Network/Disc/
-  Settings/Power) and small icons on each option. (building now)
-- Match multiMAN's section structure (pending PS3 reference photos from user).
+## 🎯 XMB PHASE (current focus) — plan from multiMAN photos (2026-11-10)
+multiMAN structure learned: horizontal category row (mmCM/Settings/Photo/Music/
+Video/Game/Favorites/Retro/Web), each item has icon + description line; L1/R1 =
+"Next/Prev Mode" cycles the GAME-LIST DISPLAY MODE (not the whole layout);
+Settings rows show a right-side value; game-info view = cover + title + options +
+button-hint bar (X Load / O Exit / [] Game Settings / ^ System Menu / L1 R1 Mode);
+bottom bar shows HDD + date. Desktop matched ours (place/app icons, file windows,
+mmCM-as-Start, right-click Rename/Delete/Open-in-HEX/Create-Folder).
+Build (original icons only):
+- [ ] Original category-row icons: GAMES(pad) PAYLOADS(chip) FILES(folder)
+      NETWORK(globe) DISC(disc) SETTINGS(gear) POWER(power); later FAVORITES(star),
+      RETRO/EMUS(original pixel creature).
+- [ ] Small per-option icon by kind (game/payload/folder/setting/update/...).
+- [ ] Description line under the selected item.
+- [ ] L1/R1 -> list / grid / cover-flow display modes for GAMES/PAYLOADS.
+- [ ] Button-hint bar (X Launch / O Back / ^ Options / [] Settings / L1 R1 Mode).
+- [ ] Settings rows: right-side value.
+- [ ] Bottom status: version + IP + storage + clock.
   SHOTS NEEDED (for layout/structure only — icons will be original):
   1. Main XMB with the FULL category row visible (all columns, in order).
   2. Each category selected, showing its vertical option list (one per category).
