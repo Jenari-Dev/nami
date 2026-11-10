@@ -18,6 +18,8 @@
 #include <dirent.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <fcntl.h>
+#include <errno.h>
 #include <strings.h>
 #include <string.h>
 #include <stdio.h>
@@ -586,11 +588,84 @@ browse(SDL_Renderer *ren, SDL_GameController *pad, const char *start) {
     }
 }
 
+/* ---- file operations (copy / move / delete, recursive) ---- */
+
+static int
+copy_file(const char *src, const char *dst) {
+    int in = open(src, O_RDONLY);
+    if (in < 0) return -1;
+    int out = open(dst, O_WRONLY | O_CREAT | O_TRUNC, 0777);
+    if (out < 0) { close(in); return -1; }
+    char buf[65536];
+    ssize_t r;
+    int rc = 0;
+    while ((r = read(in, buf, sizeof(buf))) > 0) {
+        if (write(out, buf, (size_t)r) != r) { rc = -1; break; }
+    }
+    if (r < 0) rc = -1;
+    close(in);
+    close(out);
+    return rc;
+}
+
+static int
+copy_path(const char *src, const char *dst) {
+    struct stat st;
+    if (stat(src, &st) != 0) return -1;
+    if (S_ISDIR(st.st_mode)) {
+        mkdir(dst, 0777);
+        DIR *d = opendir(src);
+        if (!d) return -1;
+        struct dirent *e;
+        int rc = 0;
+        while ((e = readdir(d))) {
+            if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+            char s[1024], t[1024];
+            snprintf(s, sizeof(s), "%s/%s", src, e->d_name);
+            snprintf(t, sizeof(t), "%s/%s", dst, e->d_name);
+            if (copy_path(s, t) != 0) rc = -1;
+        }
+        closedir(d);
+        return rc;
+    }
+    return copy_file(src, dst);
+}
+
+static int
+remove_path(const char *p) {
+    struct stat st;
+    if (stat(p, &st) != 0) return -1;
+    if (S_ISDIR(st.st_mode)) {
+        DIR *d = opendir(p);
+        if (!d) return -1;
+        struct dirent *e;
+        int rc = 0;
+        while ((e = readdir(d))) {
+            if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, "..")) continue;
+            char s[1024];
+            snprintf(s, sizeof(s), "%s/%s", p, e->d_name);
+            if (remove_path(s) != 0) rc = -1;
+        }
+        closedir(d);
+        if (rmdir(p) != 0) rc = -1;
+        return rc;
+    }
+    return unlink(p);
+}
+
+static int
+move_path(const char *src, const char *dst) {
+    if (rename(src, dst) == 0) return 0;      /* same filesystem */
+    if (copy_path(src, dst) == 0) return remove_path(src);
+    return -1;
+}
+
 /* ---- windowed desktop (multiMAN-style) ---- */
 
 #define MAX_WIN   8
 #define WIN_ENTS  256
 #define TBAR_H    44     /* window title bar height */
+#define TOOLBAR_H 34     /* per-window action toolbar */
 #define TASK_H    56     /* taskbar height          */
 
 typedef struct {
@@ -669,6 +744,11 @@ desktop(SDL_Renderer *ren, SDL_GameController *pad) {
     int start_open = 0, drag = -1, drag_dx = 0, drag_dy = 0;
     int running = 1;
 
+    char clip[1024] = "";                  /* clipboard source path */
+    int  clip_op = 0;                      /* 1=copy 2=cut */
+    int  confirm = 0; Win *cwin = NULL; int cidx = -1;
+    char cname[256] = "", notice[192] = "";
+
     char ip[64];
     local_ipv4(ip, sizeof(ip));
 
@@ -706,6 +786,29 @@ desktop(SDL_Renderer *ren, SDL_GameController *pad) {
         int mx = (int)cx, my = (int)cy;
 
         if (release) drag = -1;
+
+        /* Delete-confirm modal swallows clicks while open. */
+        if (click && confirm) {
+            int bw2 = 760, bh2 = 220, bx2 = (SCREEN_W - bw2) / 2, by2 = (SCREEN_H - bh2) / 2;
+            SDL_Rect yes = {bx2 + 40, by2 + 150, 200, 50};
+            SDL_Rect no  = {bx2 + 260, by2 + 150, 200, 50};
+            if (pt_in(yes, mx, my)) {
+                if (cwin && cwin->open && cidx >= 0 && cidx < cwin->count) {
+                    FEntry *f = &cwin->ents[cidx];
+                    char full[1024];
+                    snprintf(full, sizeof(full), "%s%s%s", cwin->path,
+                             strcmp(cwin->path, "/") == 0 ? "" : "/", f->name);
+                    int rc = remove_path(full);
+                    snprintf(notice, sizeof(notice), "Delete %s (%s)", cname,
+                             rc == 0 ? "ok" : "FAILED");
+                    win_load(cwin);
+                }
+                confirm = 0;
+            } else if (pt_in(no, mx, my)) {
+                confirm = 0;
+            }
+            click = 0;   /* consumed */
+        }
 
         if (click) {
             int handled = 0;
@@ -761,11 +864,43 @@ desktop(SDL_Renderer *ren, SDL_GameController *pad) {
                         drag = (int)(hit - wins);
                         drag_dx = mx - hit->r.x;
                         drag_dy = my - hit->r.y;
+                    } else if (my < hit->r.y + TBAR_H + TOOLBAR_H) {
+                        /* toolbar: 0 Copy  1 Cut  2 Paste  3 Del */
+                        int bx0 = hit->r.x + 10, bw = 84, gap = 6;
+                        int off = mx - bx0;
+                        int b = off / (bw + gap);
+                        int within = off >= 0 && (off % (bw + gap)) < bw && b >= 0 && b <= 3;
+                        int have_sel = hit->sel >= 0 && hit->sel < hit->count;
+                        FEntry *f = have_sel ? &hit->ents[hit->sel] : NULL;
+                        int is_up = f && strcmp(f->name, "..") == 0;
+                        if (within && f && !is_up && (b == 0 || b == 1)) {
+                            snprintf(clip, sizeof(clip), "%s%s%s", hit->path,
+                                     strcmp(hit->path, "/") == 0 ? "" : "/", f->name);
+                            clip_op = (b == 0) ? 1 : 2;
+                            snprintf(notice, sizeof(notice), "%s %s",
+                                     b == 0 ? "Copied" : "Cut", f->name);
+                        } else if (within && b == 2 && clip[0]) {
+                            const char *base = strrchr(clip, '/');
+                            base = base ? base + 1 : clip;
+                            char dst[1024];
+                            snprintf(dst, sizeof(dst), "%s%s%s", hit->path,
+                                     strcmp(hit->path, "/") == 0 ? "" : "/", base);
+                            int rc = (clip_op == 2) ? move_path(clip, dst)
+                                                    : copy_path(clip, dst);
+                            snprintf(notice, sizeof(notice), "%s %s (%s)",
+                                     clip_op == 2 ? "Move" : "Copy", base,
+                                     rc == 0 ? "ok" : "FAILED");
+                            if (clip_op == 2 && rc == 0) clip[0] = 0;
+                            win_load(hit);
+                        } else if (within && b == 3 && f && !is_up) {
+                            confirm = 1; cwin = hit; cidx = hit->sel;
+                            snprintf(cname, sizeof(cname), "%s", f->name);
+                        }
                     } else {
                         /* body: click a file row */
-                        int bodyy = hit->r.y + TBAR_H + 8;
+                        int bodyy = hit->r.y + TBAR_H + TOOLBAR_H + 8;
                         int row = (my - bodyy) / 34;
-                        int vis = (hit->r.h - TBAR_H - 16) / 34;
+                        int vis = (hit->r.h - TBAR_H - TOOLBAR_H - 16) / 34;
                         if (row >= 0 && row < vis) {
                             int j = hit->top + row;
                             if (j >= 0 && j < hit->count) {
@@ -824,8 +959,22 @@ desktop(SDL_Renderer *ren, SDL_GameController *pad) {
                 fill(ren, w->r.x + w->r.w - 40, w->r.y + 6, 34, 32, 0xff, 0x6a, 0x6a, 220);
                 text(ren, w->r.x + w->r.w - 30, w->r.y + 14, 2, 0x20, 0x08, 0x08, "x");
 
-                int bodyy = w->r.y + TBAR_H + 8;
-                int vis = (w->r.h - TBAR_H - 16) / 34;
+                /* per-window toolbar */
+                fill(ren, w->r.x, w->r.y + TBAR_H, w->r.w, TOOLBAR_H, 0x12, 0x20, 0x34, 255);
+                {
+                    static const char *tb[] = {"Copy", "Cut", "Paste", "Del"};
+                    int bx0 = w->r.x + 10, bw = 84, gap = 6;
+                    for (int b = 0; b < 4; b++) {
+                        int bxx = bx0 + b * (bw + gap);
+                        Uint8 br = (b == 3) ? 0xff : 0x2a;
+                        Uint8 bg = (b == 3) ? 0x8a : 0x3e;
+                        Uint8 bb = (b == 3) ? 0x8a : 0x5c;
+                        fill(ren, bxx, w->r.y + TBAR_H + 3, bw, TOOLBAR_H - 6, br, bg, bb, 160);
+                        text(ren, bxx + 10, w->r.y + TBAR_H + 10, 2, 0xe8, 0xf0, 0xff, tb[b]);
+                    }
+                }
+                int bodyy = w->r.y + TBAR_H + TOOLBAR_H + 8;
+                int vis = (w->r.h - TBAR_H - TOOLBAR_H - 16) / 34;
                 if (w->sel >= 0) {
                     if (w->sel < w->top) w->top = w->sel;
                     if (w->sel >= w->top + vis) w->top = w->sel - vis + 1;
@@ -880,6 +1029,35 @@ desktop(SDL_Renderer *ren, SDL_GameController *pad) {
                      (i == n_menu - 1) ? 0xff : 0xcf, (i == n_menu - 1) ? 0x9a : 0xde,
                      (i == n_menu - 1) ? 0x9a : 0xff, menu[i]);
             }
+        }
+
+        if (notice[0]) {
+            text(ren, 172, SCREEN_H - TASK_H + 18, 2, 0x9f, 0xf0, 0xc2, notice);
+        }
+        if (clip[0]) {
+            const char *base = strrchr(clip, '/');
+            base = base ? base + 1 : clip;
+            char cb[140];
+            snprintf(cb, sizeof(cb), "CLIP[%s] %s", clip_op == 2 ? "cut" : "copy", base);
+            int lw = (int)strlen(cb) * 8 * 2;
+            text(ren, SCREEN_W / 2 - lw / 2, SCREEN_H - TASK_H + 18, 2,
+                 0xd4, 0xd0, 0x92, cb);
+        }
+
+        /* delete-confirm modal */
+        if (confirm) {
+            int bw2 = 760, bh2 = 220, bx2 = (SCREEN_W - bw2) / 2, by2 = (SCREEN_H - bh2) / 2;
+            fill(ren, 0, 0, SCREEN_W, SCREEN_H, 0, 0, 0, 150);
+            fill(ren, bx2, by2, bw2, bh2, 0x16, 0x1e, 0x2e, 250);
+            fill(ren, bx2, by2, bw2, 3, 0xff, 0x8a, 0x8a, 255);
+            char q[320];
+            snprintf(q, sizeof(q), "Delete  %s ?", cname);
+            text(ren, bx2 + 40, by2 + 46, 3, 0xff, 0xd0, 0xd0, q);
+            text(ren, bx2 + 40, by2 + 108, 2, 0x9a, 0xa6, 0xc0, "This cannot be undone.");
+            fill(ren, bx2 + 40, by2 + 150, 200, 50, 0xff, 0x6a, 0x6a, 210);
+            text(ren, bx2 + 80, by2 + 166, 2, 0x20, 0x08, 0x08, "DELETE");
+            fill(ren, bx2 + 260, by2 + 150, 200, 50, 0x2a, 0x3e, 0x5c, 210);
+            text(ren, bx2 + 338, by2 + 166, 2, 0xe0, 0xf0, 0xff, "NO");
         }
 
         draw_cursor(ren, mx, my);
