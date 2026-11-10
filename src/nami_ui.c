@@ -445,8 +445,15 @@ upd_install_thread(void *d) {
     g_upd_state = 2;
     if (!g_upd_avail) check_update();
     if (g_upd_avail) {
-        if (install_update() == 0) g_install_ready = 1;
-        else snprintf(g_upd_msg, sizeof(g_upd_msg), "Update download FAILED");
+        if (install_update() == 0) {
+            snprintf(g_upd_msg, sizeof(g_upd_msg),
+                     "Update installed: v%s - exit Nami (Options) and reopen to apply",
+                     g_upd_ver);
+            g_upd_avail = 0;
+            g_install_ready = 1;   /* shows the 'installed, relaunch' banner */
+        } else {
+            snprintf(g_upd_msg, sizeof(g_upd_msg), "Update download FAILED");
+        }
     } else {
         snprintf(g_upd_msg, sizeof(g_upd_msg), "No update available (v%s)", NAMI_VERSION);
     }
@@ -1742,11 +1749,9 @@ main(void) {
 
         cat_scroll += ((float)sel_cat - cat_scroll) * 0.25f;
 
-        /* An install finished downloading on the worker thread: relaunch. */
-        if (g_install_ready) {
-            request_launch("/data/nami/nami_ui.elf");
-            running = 0;
-        }
+        /* Self-relaunch (a 2nd in-session bigapp launch) is unstable on the
+         * exploit, so after install we ask the user to exit + reopen instead.
+         * The PKG build will relaunch cleanly via the system. */
 
         /* Load the selected game's cover0 when the selection changes. */
         if (sel_cat == CAT_GAMES) {
@@ -1791,9 +1796,12 @@ main(void) {
             int lw = (int)strlen(li) * 8 * 2;
             text(ren, SCREEN_W - lw - 40, 64, 2, 0x5f, 0x76, 0xa0, li);
         }
-        if (g_upd_avail) {
+        if (g_install_ready || g_upd_avail) {
             char ub[128];
-            snprintf(ub, sizeof(ub), "UPDATE AVAILABLE  v%s   -   Settings > Install Update", g_upd_ver);
+            if (g_install_ready)
+                snprintf(ub, sizeof(ub), "UPDATE INSTALLED  v%s   -   exit + reopen Nami to apply", g_upd_ver);
+            else
+                snprintf(ub, sizeof(ub), "UPDATE AVAILABLE  v%s   -   Settings > Install Update", g_upd_ver);
             int uw = (int)strlen(ub) * 8;
             fill(ren, SCREEN_W/2 - uw/2 - 24, 22, uw + 48, 38, 0x0e, 0x2a, 0x1d, 230);
             fill(ren, SCREEN_W/2 - uw/2 - 24, 22, uw + 48, 3, 0x2b, 0xd4, 0x7e, 255);

@@ -11,8 +11,8 @@
 NAMI_SDK ?= /home/jenari/dev/emu/ps5-tools/ps5-payload-sdk-pacbrew
 override PS5_PAYLOAD_SDK := $(NAMI_SDK)
 
-# Nami version (override to build an "update" image: make VERSION=0.1.1)
-VERSION ?= 0.1.0
+# Nami version (override to build an "update" image: make VERSION=0.1.3)
+VERSION ?= 0.1.2
 
 PS5_HOST      ?= ps5
 PS5_FTP_PORT  ?= 2121
