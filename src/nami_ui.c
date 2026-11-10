@@ -35,9 +35,11 @@
 #define REQUEST_PATH "/data/ps5_homebrew_launcher_request.txt"
 #define APP_DB "/system_data/priv/mms/app.db"
 
-/* Provided by libSceSystemService (symbol present in the stub). */
+/* Provided by libSceSystemService (symbols present in the stub). */
 int sceSystemServiceLaunchApp(const char *titleId, const char *const *argv,
                               void *param);
+int sceLncUtilLaunchApp(const char *titleId, const char *const *argv,
+                        void *param);
 
 enum { KIND_INFO, KIND_PAYLOAD, KIND_TITLE };
 
@@ -93,6 +95,57 @@ tid_from_path(const char *s, char *out, size_t n) {
     return 0;
 }
 
+/* Map one Unicode codepoint to a close ASCII letter (macrons, accents) so
+ * the 8x8 debug font can show real names until the TTF theme pass. */
+static char
+cp_to_ascii(unsigned cp) {
+    switch (cp) {   /* Latin Extended-A (macrons used in JP romanization) */
+        case 0x100: case 0x102: case 0x104: return 'A';
+        case 0x101: case 0x103: case 0x105: return 'a';
+        case 0x112: case 0x114: case 0x116: case 0x118: case 0x11A: return 'E';
+        case 0x113: case 0x115: case 0x117: case 0x119: case 0x11B: return 'e';
+        case 0x128: case 0x12A: case 0x12C: case 0x12E: return 'I';
+        case 0x129: case 0x12B: case 0x12D: case 0x12F: return 'i';
+        case 0x14C: case 0x14E: case 0x150: return 'O';
+        case 0x14D: case 0x14F: case 0x151: return 'o';
+        case 0x168: case 0x16A: case 0x16C: case 0x16E: case 0x170: return 'U';
+        case 0x169: case 0x16B: case 0x16D: case 0x16F: case 0x171: return 'u';
+        default: break;
+    }
+    if (cp >= 0xC0 && cp <= 0xFF) {   /* Latin-1 supplement */
+        static const char lo[] = "aaaaaaaceeeeiiiidnooooo.ouuuuy.y";
+        if (cp == 0xDF) return 's';
+        int idx = (cp >= 0xE0) ? (int)(cp - 0xE0) : (int)(cp - 0xC0);
+        char c = lo[idx];
+        if (c == '.') return 0;
+        return (cp < 0xE0) ? (char)toupper((unsigned char)c) : c;
+    }
+    return 0;   /* unknown -> drop */
+}
+
+static void
+sanitize_ascii(char *dst, size_t n, const char *src) {
+    size_t o = 0;
+    const unsigned char *p = (const unsigned char *)src;
+    while (*p && o + 1 < n) {
+        unsigned c = *p;
+        if (c < 0x80) { dst[o++] = (char)c; p++; continue; }
+        int len; unsigned cp;
+        if ((c & 0xE0) == 0xC0)      { cp = c & 0x1F; len = 1; }
+        else if ((c & 0xF0) == 0xE0) { cp = c & 0x0F; len = 2; }
+        else if ((c & 0xF8) == 0xF0) { cp = c & 0x07; len = 3; }
+        else { p++; continue; }
+        p++;
+        for (int i = 0; i < len && (*p & 0xC0) == 0x80; i++) {
+            cp = (cp << 6) | (*p & 0x3F);
+            p++;
+        }
+        char a = cp_to_ascii(cp);
+        if (a) dst[o++] = a;
+    }
+    dst[o] = 0;
+}
+
 static void
 add_name(const char *tid, const char *name) {
     if (!tid || !tid[0] || !name || g_name_count >= MAX_NAMES) {
@@ -102,7 +155,7 @@ add_name(const char *tid, const char *name) {
         if (strcmp(g_names[i].tid, tid) == 0) return;   /* first wins */
     }
     snprintf(g_names[g_name_count].tid, 16, "%s", tid);
-    snprintf(g_names[g_name_count].name, 96, "%s", name);
+    sanitize_ascii(g_names[g_name_count].name, 96, name);
     g_name_count++;
 }
 
@@ -366,8 +419,16 @@ main(void) {
                     running = 0;   /* bootstrap launches it after we exit */
                 } else if (it->kind == KIND_TITLE && it->path[0]) {
                     int rc = sceSystemServiceLaunchApp(it->path, NULL, NULL);
-                    snprintf(status, sizeof(status),
-                             "Launch %s (%s) rc=0x%x", it->label, it->path, rc);
+                    int rc2 = (rc != 0) ? sceLncUtilLaunchApp(it->path, NULL, NULL)
+                                        : 0;
+                    if (rc == 0 || rc2 == 0) {
+                        snprintf(status, sizeof(status), "Launching %s ...", it->label);
+                        running = 0;   /* release our slot so the title foregrounds */
+                    } else {
+                        snprintf(status, sizeof(status),
+                                 "%s (%s): svc=0x%x lnc=0x%x",
+                                 it->label, it->path, rc, rc2);
+                    }
                 } else {
                     snprintf(status, sizeof(status), "%s > %s   (coming later)",
                              c->name, it->label);
