@@ -79,7 +79,7 @@ launch_title(const char *title_id) {
     return (rc & 0x80000000u) ? (int)rc : 0;
 }
 
-enum { KIND_INFO, KIND_PAYLOAD, KIND_TITLE, KIND_DIR };
+enum { KIND_INFO, KIND_PAYLOAD, KIND_TITLE, KIND_DIR, KIND_DESKTOP };
 
 typedef struct {
     char label[128];
@@ -331,6 +331,7 @@ build_content(void) {
         add_item(&g_cats[CAT_PAYLOADS], "(no payloads found)", "", KIND_INFO);
     }
 
+    add_item(&g_cats[CAT_FILES], "Open Desktop (windowed)", "", KIND_DESKTOP);
     add_item(&g_cats[CAT_FILES], "Browse / (root)", "/", KIND_DIR);
     add_item(&g_cats[CAT_FILES], "/data", "/data", KIND_DIR);
     add_item(&g_cats[CAT_FILES], "/user", "/user", KIND_DIR);
@@ -585,6 +586,308 @@ browse(SDL_Renderer *ren, SDL_GameController *pad, const char *start) {
     }
 }
 
+/* ---- windowed desktop (multiMAN-style) ---- */
+
+#define MAX_WIN   8
+#define WIN_ENTS  256
+#define TBAR_H    44     /* window title bar height */
+#define TASK_H    56     /* taskbar height          */
+
+typedef struct {
+    int open, z;
+    char path[1024];
+    SDL_Rect r;                 /* window rect */
+    FEntry ents[WIN_ENTS];
+    int count, sel, top;
+} Win;
+
+typedef struct { char label[48]; char path[1024]; int x, y; } Shortcut;
+
+static int
+pt_in(SDL_Rect r, int x, int y) {
+    return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
+}
+
+static void
+win_load(Win *w) {
+    w->count = load_dir(w->path, w->ents, WIN_ENTS);
+    w->sel = -1;
+    w->top = 0;
+}
+
+static Win *
+win_open(Win *wins, int *zmax, const char *path, int n_open) {
+    for (int i = 0; i < MAX_WIN; i++) {
+        if (!wins[i].open) {
+            Win *w = &wins[i];
+            w->open = 1;
+            w->z = ++(*zmax);
+            snprintf(w->path, sizeof(w->path), "%s", path);
+            w->r.x = 120 + (n_open % 5) * 48;
+            w->r.y = 90 + (n_open % 5) * 44;
+            w->r.w = 720;
+            w->r.h = 540;
+            win_load(w);
+            return w;
+        }
+    }
+    return NULL;
+}
+
+/* Draw an original arrow cursor (not any existing icon set). */
+static void
+draw_cursor(SDL_Renderer *ren, int x, int y) {
+    for (int i = 0; i < 20; i++) {
+        fill(ren, x, y + i, 2 + (i * 11) / 20, 2, 0x10, 0x16, 0x22, 255); /* shadow */
+    }
+    for (int i = 0; i < 18; i++) {
+        fill(ren, x + 1, y + 1 + i, 1 + (i * 10) / 18, 2, 0xff, 0xff, 0xff, 255);
+    }
+}
+
+static void
+desktop(SDL_Renderer *ren, SDL_GameController *pad) {
+    Win wins[MAX_WIN];
+    memset(wins, 0, sizeof(wins));
+    int zmax = 0, n_opened = 0;
+
+    Shortcut shortcuts[] = {
+        {"/data", "/data", 70, 90},
+        {"root /", "/", 70, 230},
+        {"/user", "/user", 70, 370},
+        {"USB0", "/mnt/usb0", 70, 510},
+    };
+    int n_short = (int)(sizeof(shortcuts) / sizeof(shortcuts[0]));
+
+    const char *menu[] = {"Open  /", "Open  /data", "Open  /user",
+                          "Open  /mnt/usb0", "Web Browser (coming)",
+                          "Close Desktop"};
+    const char *menu_path[] = {"/", "/data", "/user", "/mnt/usb0", "", ""};
+    int n_menu = 6;
+
+    float cx = SCREEN_W / 2.0f, cy = SCREEN_H / 2.0f;
+    int start_open = 0, drag = -1, drag_dx = 0, drag_dy = 0;
+    int running = 1;
+
+    char ip[64];
+    local_ipv4(ip, sizeof(ip));
+
+    while (running) {
+        int click = 0, release = 0;
+        SDL_Event e;
+        while (SDL_PollEvent(&e)) {
+            if (e.type == SDL_QUIT) {
+                running = 0;
+            } else if (e.type == SDL_MOUSEMOTION) {
+                cx = e.motion.x; cy = e.motion.y;
+            } else if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
+                click = 1;
+            } else if (e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_LEFT) {
+                release = 1;
+            } else if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_ESCAPE) {
+                running = 0;
+            } else if (e.type == SDL_CONTROLLERBUTTONDOWN) {
+                if (e.cbutton.button == SDL_CONTROLLER_BUTTON_A) click = 1;
+                else if (e.cbutton.button == SDL_CONTROLLER_BUTTON_START) running = 0;
+            } else if (e.type == SDL_CONTROLLERBUTTONUP) {
+                if (e.cbutton.button == SDL_CONTROLLER_BUTTON_A) release = 1;
+            }
+        }
+
+        /* Right stick moves the cursor. */
+        if (pad) {
+            int ax = SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_RIGHTX);
+            int ay = SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_RIGHTY);
+            if (ax > 8000 || ax < -8000) cx += (ax / 32768.0f) * 16.0f;
+            if (ay > 8000 || ay < -8000) cy += (ay / 32768.0f) * 16.0f;
+            if (cx < 0) cx = 0; if (cx > SCREEN_W - 2) cx = SCREEN_W - 2;
+            if (cy < 0) cy = 0; if (cy > SCREEN_H - 2) cy = SCREEN_H - 2;
+        }
+        int mx = (int)cx, my = (int)cy;
+
+        if (release) drag = -1;
+
+        if (click) {
+            int handled = 0;
+            /* Start button (taskbar, bottom-left) */
+            SDL_Rect startbtn = {12, SCREEN_H - TASK_H + 8, 150, TASK_H - 16};
+            if (pt_in(startbtn, mx, my)) {
+                start_open = !start_open; handled = 1;
+            }
+            /* Start menu items */
+            if (!handled && start_open) {
+                int mw = 360, mh = n_menu * 48 + 16;
+                int mxp = 12, myp = SCREEN_H - TASK_H - mh - 6;
+                SDL_Rect mrect = {mxp, myp, mw, mh};
+                if (pt_in(mrect, mx, my)) {
+                    int idx = (my - myp - 8) / 48;
+                    if (idx >= 0 && idx < n_menu) {
+                        if (idx == n_menu - 1) running = 0;          /* Close Desktop */
+                        else if (menu_path[idx][0]) {
+                            win_open(wins, &zmax, menu_path[idx], n_opened++);
+                        }
+                    }
+                    start_open = 0; handled = 1;
+                } else {
+                    start_open = 0;   /* click outside closes menu */
+                }
+            }
+            /* Desktop shortcuts */
+            if (!handled) {
+                for (int i = 0; i < n_short; i++) {
+                    SDL_Rect ir = {shortcuts[i].x, shortcuts[i].y, 108, 112};
+                    if (pt_in(ir, mx, my)) {
+                        win_open(wins, &zmax, shortcuts[i].path, n_opened++);
+                        handled = 1; break;
+                    }
+                }
+            }
+            /* Windows (topmost first) */
+            if (!handled) {
+                Win *hit = NULL;
+                for (int i = 0; i < MAX_WIN; i++) {
+                    if (wins[i].open && pt_in(wins[i].r, mx, my) &&
+                        (!hit || wins[i].z > hit->z)) {
+                        hit = &wins[i];
+                    }
+                }
+                if (hit) {
+                    hit->z = ++zmax;                 /* focus */
+                    SDL_Rect closeb = {hit->r.x + hit->r.w - 40, hit->r.y + 6, 34, 32};
+                    SDL_Rect tbar = {hit->r.x, hit->r.y, hit->r.w, TBAR_H};
+                    if (pt_in(closeb, mx, my)) {
+                        hit->open = 0;
+                    } else if (pt_in(tbar, mx, my)) {
+                        drag = (int)(hit - wins);
+                        drag_dx = mx - hit->r.x;
+                        drag_dy = my - hit->r.y;
+                    } else {
+                        /* body: click a file row */
+                        int bodyy = hit->r.y + TBAR_H + 8;
+                        int row = (my - bodyy) / 34;
+                        int vis = (hit->r.h - TBAR_H - 16) / 34;
+                        if (row >= 0 && row < vis) {
+                            int j = hit->top + row;
+                            if (j >= 0 && j < hit->count) {
+                                hit->sel = j;
+                                FEntry *f = &hit->ents[j];
+                                if (strcmp(f->name, "..") == 0) {
+                                    path_up(hit->path); win_load(hit);
+                                } else if (f->is_dir) {
+                                    char np[1024];
+                                    snprintf(np, sizeof(np), "%s%s%s", hit->path,
+                                             strcmp(hit->path, "/") == 0 ? "" : "/", f->name);
+                                    snprintf(hit->path, sizeof(hit->path), "%s", np);
+                                    win_load(hit);
+                                }
+                            }
+                        }
+                    }
+                    handled = 1;
+                }
+            }
+        }
+
+        /* Drag the focused window. */
+        if (drag >= 0 && wins[drag].open) {
+            wins[drag].r.x = mx - drag_dx;
+            wins[drag].r.y = my - drag_dy;
+        }
+
+        /* ---- render ---- */
+        for (int band = 0; band < SCREEN_H; band += 6) {
+            float t = (float)band / SCREEN_H;
+            Uint8 rr = (Uint8)(0x0a + (0x1a - 0x0a) * (1.0f - t));
+            Uint8 gg = (Uint8)(0x13 + (0x2c - 0x13) * (1.0f - t));
+            Uint8 bb = (Uint8)(0x22 + (0x4a - 0x22) * (1.0f - t));
+            fill(ren, 0, band, SCREEN_W, 6, rr, gg, bb, 255);
+        }
+
+        /* desktop shortcuts */
+        for (int i = 0; i < n_short; i++) {
+            Shortcut *s = &shortcuts[i];
+            fill(ren, s->x + 20, s->y, 68, 56, 0x7f, 0xd0, 0xff, 70);
+            fill(ren, s->x + 20, s->y, 68, 6, 0x7f, 0xd0, 0xff, 220);
+            int lw = (int)strlen(s->label) * 8 * 2;
+            text(ren, s->x + 54 - lw / 2, s->y + 70, 2, 0xc8, 0xe0, 0xff, s->label);
+        }
+
+        /* windows in z order */
+        for (int pass = 1; pass <= zmax; pass++) {
+            for (int i = 0; i < MAX_WIN; i++) {
+                Win *w = &wins[i];
+                if (!w->open || w->z != pass) continue;
+                fill(ren, w->r.x, w->r.y, w->r.w, w->r.h, 0x0c, 0x16, 0x26, 245);
+                fill(ren, w->r.x, w->r.y, w->r.w, TBAR_H, 0x1c, 0x30, 0x50, 255);
+                fill(ren, w->r.x, w->r.y, w->r.w, 3, 0x7f, 0xd0, 0xff, 255);
+                text(ren, w->r.x + 14, w->r.y + 14, 2, 0xdf, 0xec, 0xff, w->path);
+                fill(ren, w->r.x + w->r.w - 40, w->r.y + 6, 34, 32, 0xff, 0x6a, 0x6a, 220);
+                text(ren, w->r.x + w->r.w - 30, w->r.y + 14, 2, 0x20, 0x08, 0x08, "x");
+
+                int bodyy = w->r.y + TBAR_H + 8;
+                int vis = (w->r.h - TBAR_H - 16) / 34;
+                if (w->sel >= 0) {
+                    if (w->sel < w->top) w->top = w->sel;
+                    if (w->sel >= w->top + vis) w->top = w->sel - vis + 1;
+                }
+                int shown = w->count - w->top;
+                if (shown > vis) shown = vis;
+                for (int k = 0; k < shown; k++) {
+                    int j = w->top + k;
+                    int ry = bodyy + k * 34;
+                    FEntry *f = &w->ents[j];
+                    if (j == w->sel) {
+                        fill(ren, w->r.x + 6, ry - 2, w->r.w - 12, 30, 0x7f, 0xd0, 0xff, 40);
+                    }
+                    Uint8 cc = f->is_dir ? 0xff : 0xd0;
+                    char line[280];
+                    snprintf(line, sizeof(line), "%s%s", f->is_dir ? "[ ] " : "    ", f->name);
+                    text(ren, w->r.x + 16, ry, 2, f->is_dir ? 0x9f : 0xc0,
+                         f->is_dir ? 0xe0 : 0xc0, cc, line);
+                    if (!f->is_dir) {
+                        char sz[32]; fmt_size(f->size, sz, sizeof(sz));
+                        int sw = (int)strlen(sz) * 8 * 2;
+                        text(ren, w->r.x + w->r.w - 16 - sw, ry, 2, 0x72, 0x80, 0x98, sz);
+                    }
+                }
+            }
+        }
+
+        /* taskbar */
+        fill(ren, 0, SCREEN_H - TASK_H, SCREEN_W, TASK_H, 0x08, 0x10, 0x1e, 255);
+        fill(ren, 0, SCREEN_H - TASK_H, SCREEN_W, 2, 0x7f, 0xd0, 0xff, 120);
+        fill(ren, 12, SCREEN_H - TASK_H + 8, 150, TASK_H - 16, 0x7f, 0xd0, 0xff, 60);
+        text(ren, 40, SCREEN_H - TASK_H + 18, 2, 0xe0, 0xf0, 0xff, "START");
+        {
+            char tb[96];
+            snprintf(tb, sizeof(tb), "NAMI DESKTOP    IP %s", ip);
+            int lw = (int)strlen(tb) * 8 * 2;
+            text(ren, SCREEN_W - lw - 24, SCREEN_H - TASK_H + 18, 2, 0x8a, 0x9c, 0xc0, tb);
+        }
+
+        /* start menu */
+        if (start_open) {
+            int mw = 360, mh = n_menu * 48 + 16;
+            int mxp = 12, myp = SCREEN_H - TASK_H - mh - 6;
+            fill(ren, mxp, myp, mw, mh, 0x10, 0x1c, 0x30, 250);
+            fill(ren, mxp, myp, mw, 3, 0x7f, 0xd0, 0xff, 255);
+            for (int i = 0; i < n_menu; i++) {
+                int iy = myp + 8 + i * 48;
+                if (mx >= mxp && mx < mxp + mw && my >= iy && my < iy + 48) {
+                    fill(ren, mxp + 4, iy, mw - 8, 46, 0x7f, 0xd0, 0xff, 40);
+                }
+                text(ren, mxp + 20, iy + 14, 2,
+                     (i == n_menu - 1) ? 0xff : 0xcf, (i == n_menu - 1) ? 0x9a : 0xde,
+                     (i == n_menu - 1) ? 0x9a : 0xff, menu[i]);
+            }
+        }
+
+        draw_cursor(ren, mx, my);
+        SDL_RenderPresent(ren);
+        SDL_Delay(16);
+    }
+}
+
 int
 main(void) {
     build_content();
@@ -678,6 +981,8 @@ main(void) {
                     }
                 } else if (it->kind == KIND_DIR && it->path[0]) {
                     browse(ren, pad, it->path);
+                } else if (it->kind == KIND_DESKTOP) {
+                    desktop(ren, pad);
                 } else {
                     snprintf(status, sizeof(status), "%s > %s   (coming later)",
                              c->name, it->label);
