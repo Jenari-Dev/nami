@@ -13,9 +13,12 @@ history and research/notes/ for deep dives.
 - Desktop: open folder windows, drag, taskbar, start menu, trash delete.
 
 ## 🔨 Built — awaiting on-device test
-- **Update system (TEST THIS):** version shown on XMB, auto-check on launch,
-  banner when update available, Settings → Check for Update / Install Update,
-  install downloads new UI + relaunches. (Test server: http://192.168.3.35:8099)
+- **Update system (TEST THIS):** version on XMB, auto-check on launch (now
+  threaded = no freeze, shows Checking.../Downloading...), banner when an update
+  exists, Settings Check/Install, install downloads the new UI from the GitHub
+  release + relaunches. About Nami opens an overlay (version/notes/repo).
+  Source: github.com/Jenari-Dev/nami ; manifest = raw .../main/version.json ;
+  current release v0.1.1 (console ships v0.1.0 so an update always shows for the test).
 - TTF typography (DejaVuSans) across the UI.
 - Desktop rewrite: click-select/click-open, min/max/close + taskbar buttons,
   resize, item + desktop right-click menus, /data/nami/desktop location,
@@ -48,8 +51,12 @@ history and research/notes/ for deep dives.
 - Match multiMAN's section structure (pending PS3 reference photos from user).
 
 ## 📋 Planned
-- **Home-screen tile**: needs a small fake-app PKG (Elf Arsenal tile_autoinstall
-  only tiles PKGs, not raw payloads). Separate build task.
+- **Home-screen tile / make Nami a PKG (like multiMAN)**: multiMAN was a PKG;
+  the PS5 equivalent is a fake-signed app PKG installed via etaHEN/Elf Arsenal,
+  which gives a real home-screen icon and launches Nami as its own app (instead
+  of borrowing the bigapp slot). Needs PKG tooling (param.json/sfo, eboot,
+  icon0, fake-sign). This is the single task that delivers both "home-screen
+  shortcut" and "it's a PKG, not an ELF". Next up.
 - **Nami Payload Store** (like multiMAN's bewholeogy/pkg store): a manifest/repo
   of payloads (name, GitHub repo, asset glob, version, changelog, description) +
   an in-Nami browser that downloads from GitHub Releases over HTTPS and installs
