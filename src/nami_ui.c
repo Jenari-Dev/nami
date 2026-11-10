@@ -9,6 +9,7 @@
 #include <SDL.h>
 #include <SDL_test_font.h>
 #include <SDL_image.h>
+#include <SDL_ttf.h>
 #include <sqlite3.h>
 
 #include <sys/socket.h>
@@ -392,13 +393,79 @@ fill(SDL_Renderer *r, int x, int y, int w, int h,
     SDL_RenderFillRect(r, &rect);
 }
 
+/* Real typography via SDL2_ttf (DejaVuSans, bundled), cached per
+ * string+size+colour; falls back to the 8x8 debug font if the TTF is absent
+ * so the UI never breaks. */
+#define FONT_PATH "/data/nami/nami.ttf"
+static TTF_Font *g_font[5];     /* indexed by scale 1..4 */
+
+typedef struct {
+    char s[96];
+    int scale;
+    Uint32 rgb;
+    SDL_Texture *tex;
+    int w, h;
+    unsigned used;
+} TxCache;
+#define TXC 384
+static TxCache g_txc[TXC];
+static unsigned g_txtick;
+
 static void
 text(SDL_Renderer *r, int x, int y, int scale,
      Uint8 cr, Uint8 cg, Uint8 cb, const char *s) {
-    SDL_SetRenderDrawColor(r, cr, cg, cb, 255);
-    SDL_RenderSetScale(r, (float)scale, (float)scale);
-    SDLTest_DrawString(r, (float)x / scale, (float)y / scale, s);
-    SDL_RenderSetScale(r, 1.0f, 1.0f);
+    if (scale < 1) scale = 1;
+    if (scale > 4) scale = 4;
+    if (!s) s = "";
+    TTF_Font *f = g_font[scale];
+    if (!f || !s[0]) {
+        SDL_SetRenderDrawColor(r, cr, cg, cb, 255);
+        SDL_RenderSetScale(r, (float)scale, (float)scale);
+        SDLTest_DrawString(r, (float)x / scale, (float)y / scale, s);
+        SDL_RenderSetScale(r, 1.0f, 1.0f);
+        return;
+    }
+    Uint32 rgb = ((Uint32)cr << 16) | ((Uint32)cg << 8) | cb;
+    g_txtick++;
+
+    TxCache *slot = NULL;
+    int freeidx = -1, oldidx = 0;
+    unsigned oldest = 0xffffffffu;
+    for (int i = 0; i < TXC; i++) {
+        TxCache *c = &g_txc[i];
+        if (!c->tex) { if (freeidx < 0) freeidx = i; continue; }
+        if (c->scale == scale && c->rgb == rgb &&
+            strncmp(c->s, s, sizeof(c->s) - 1) == 0) { slot = c; break; }
+        if (c->used < oldest) { oldest = c->used; oldidx = i; }
+    }
+    if (!slot) {
+        int idx = (freeidx >= 0) ? freeidx : oldidx;
+        TxCache *c = &g_txc[idx];
+        if (c->tex) { SDL_DestroyTexture(c->tex); c->tex = NULL; }
+        SDL_Color col = {cr, cg, cb, 255};
+        SDL_Surface *surf = TTF_RenderUTF8_Blended(f, s, col);
+        if (!surf) return;
+        c->tex = SDL_CreateTextureFromSurface(r, surf);
+        c->w = surf->w; c->h = surf->h;
+        c->scale = scale; c->rgb = rgb;
+        snprintf(c->s, sizeof(c->s), "%s", s);
+        SDL_FreeSurface(surf);
+        slot = c;
+    }
+    slot->used = g_txtick;
+    if (slot->tex) {
+        SDL_Rect dst = {x, y, slot->w, slot->h};
+        SDL_RenderCopy(r, slot->tex, NULL, &dst);
+    }
+}
+
+static void
+fonts_load(void) {
+    if (TTF_Init() != 0) return;
+    static const int sizes[5] = {0, 15, 21, 30, 40};  /* scale 1..4 */
+    for (int sc = 1; sc <= 4; sc++) {
+        g_font[sc] = TTF_OpenFont(FONT_PATH, sizes[sc]);
+    }
 }
 
 static void
@@ -1422,6 +1489,7 @@ main(void) {
     build_content();
 
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) != 0) return 1;
+    fonts_load();
     SDL_Window *win = SDL_CreateWindow(
         "Nami", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
         SCREEN_W, SCREEN_H, SDL_WINDOW_FULLSCREEN);

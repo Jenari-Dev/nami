@@ -44,6 +44,7 @@ UI_LDADD  := \
 	$(HB)/lib/libpng.a $(HB)/lib/libjpeg.a \
 	$(HB)/lib/libwebp.a $(HB)/lib/libwebpdemux.a $(HB)/lib/libsharpyuv.a \
 	$(HB)/lib/libsqlite3.a \
+	-Wl,--start-group $(HB)/lib/libSDL2_ttf.a $(HB)/lib/libfreetype.a $(HB)/lib/libharfbuzz.a -Wl,--end-group \
 	-lSceSystemService -lSceUserService \
 	-lSceVideoOut -lSceAudioOut -lScePad -lSceKeyboard -lSceImeDialog \
 	-lkernel_sys -lm -lz -lbz2 -liconv
@@ -66,6 +67,7 @@ clean:
 
 # Upload both ELFs into /data/nami and put the bootstrap in Elf Arsenal.
 deploy: all
+	curl -s --max-time 30 --ftp-create-dirs -T assets/nami.ttf ftp://$(PS5_HOST):$(PS5_FTP_PORT)$(NAMI_DIR)/nami.ttf
 	curl -s --max-time 30 --ftp-create-dirs -T $(UI_ELF)   ftp://$(PS5_HOST):$(PS5_FTP_PORT)$(NAMI_DIR)/$(UI_ELF)
 	curl -s --max-time 30 --ftp-create-dirs -T $(BOOT_ELF) ftp://$(PS5_HOST):$(PS5_FTP_PORT)$(NAMI_DIR)/$(BOOT_ELF)
 	curl -s --max-time 30 -T $(BOOT_ELF) ftp://$(PS5_HOST):$(PS5_FTP_PORT)$(ARSENAL_DIR)/$(BOOT_ELF)

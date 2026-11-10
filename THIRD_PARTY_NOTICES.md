@@ -24,6 +24,13 @@ The `LncAppParam` struct layout and the `sceLncUtilLaunchApp` launch sequence
 (foreground user + skip-update flag) are derived from **LightningMods/Itemzflow**
 (GPL-3.0), https://github.com/LightningMods/Itemzflow.
 
+## Bundled font
+
+`assets/nami.ttf` is **DejaVuSans** (DejaVu Fonts, a Bitstream Vera / Arev
+derivative), used under the permissive DejaVu Fonts License (free to use,
+bundle and redistribute). It is loaded at runtime via SDL2_ttf; if absent the
+UI falls back to the built-in 8x8 debug font.
+
 ## Toolchain / libraries
 
 Built with the **ps5-payload-dev SDK** and its pacbrew library set (SDL2,

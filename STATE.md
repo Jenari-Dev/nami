@@ -25,7 +25,8 @@ ran it on the 13.20 console and confirmed the stated result._
 | M6b | windowed desktop (cursor, taskbar, Start, folder windows) | **VERIFIED on TV (2026-11-10)** |
 | M6c | file ops: New/Rename/Copy/Cut/Paste + Trash (on-screen keyboard, empty-trash confirm) | built+deployed |
 | M6d | desktop controls: left-stick moves focused window, R3/right-click context menu, taskbar clock, New-folder errno | **built + deployed, awaiting TV check** |
-| M9 | DESIGN PASS: original Nami logo, real folder/category icons, multiMAN-style desktop, L1+R1 XMB layout cycle | requested, not started (original art only) |
+| M6e | full desktop WM: select/double-open, min/max/close + taskbar buttons, resize, item+desktop right-click menus, real desktop dir, touchpad mouse | **built, DEPLOY PENDING (console offline)** |
+| M9 | DESIGN PASS: original Nami wave logo+bg DONE, Linux cursor DONE, L1+R1 XMB layouts DONE, original folder/drive/trash icons DONE; TTF typography STILL PENDING (needs bundled libre font) | in progress |
 | M7 | home-screen tile (Elf Arsenal tile_autoinstall=1) | requested, not started |
 | M8 | auto-update + check-for-updates | requested, not started |
 | M3 | settings | not started |
