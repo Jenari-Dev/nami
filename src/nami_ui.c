@@ -26,6 +26,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <ctype.h>
+#include <time.h>
 #include <math.h>
 
 #define SCREEN_W 1920
@@ -903,6 +904,7 @@ desktop(SDL_Renderer *ren, SDL_GameController *pad) {
 
     float cx = SCREEN_W / 2.0f, cy = SCREEN_H / 2.0f;
     int start_open = 0, drag = -1, drag_dx = 0, drag_dy = 0;
+    int ctx = 0, ctx_x = 0, ctx_y = 0;     /* right-click context menu */
     int running = 1;
 
     char clip[1024] = "";                  /* clipboard source path */
@@ -924,13 +926,17 @@ desktop(SDL_Renderer *ren, SDL_GameController *pad) {
                 cx = e.motion.x; cy = e.motion.y;
             } else if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_LEFT) {
                 click = 1;
+            } else if (e.type == SDL_MOUSEBUTTONDOWN && e.button.button == SDL_BUTTON_RIGHT) {
+                ctx = 1; ctx_x = (int)cx; ctx_y = (int)cy;
             } else if (e.type == SDL_MOUSEBUTTONUP && e.button.button == SDL_BUTTON_LEFT) {
                 release = 1;
             } else if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_ESCAPE) {
                 running = 0;
             } else if (e.type == SDL_CONTROLLERBUTTONDOWN) {
                 if (e.cbutton.button == SDL_CONTROLLER_BUTTON_A) click = 1;
-                else if (e.cbutton.button == SDL_CONTROLLER_BUTTON_START) running = 0;
+                else if (e.cbutton.button == SDL_CONTROLLER_BUTTON_RIGHTSTICK) {
+                    ctx = 1; ctx_x = (int)cx; ctx_y = (int)cy;
+                } else if (e.cbutton.button == SDL_CONTROLLER_BUTTON_START) running = 0;
             } else if (e.type == SDL_CONTROLLERBUTTONUP) {
                 if (e.cbutton.button == SDL_CONTROLLER_BUTTON_A) release = 1;
             }
@@ -944,6 +950,17 @@ desktop(SDL_Renderer *ren, SDL_GameController *pad) {
             if (ay > 8000 || ay < -8000) cy += (ay / 32768.0f) * 16.0f;
             if (cx < 0) cx = 0; if (cx > SCREEN_W - 2) cx = SCREEN_W - 2;
             if (cy < 0) cy = 0; if (cy > SCREEN_H - 2) cy = SCREEN_H - 2;
+
+            /* Left stick moves the focused (topmost) window. */
+            Win *fw = NULL;
+            for (int i = 0; i < MAX_WIN; i++)
+                if (wins[i].open && (!fw || wins[i].z > fw->z)) fw = &wins[i];
+            if (fw) {
+                int lx = SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_LEFTX);
+                int ly = SDL_GameControllerGetAxis(pad, SDL_CONTROLLER_AXIS_LEFTY);
+                if (lx > 8000 || lx < -8000) fw->r.x += (int)((lx / 32768.0f) * 14.0f);
+                if (ly > 8000 || ly < -8000) fw->r.y += (int)((ly / 32768.0f) * 14.0f);
+            }
         }
         int mx = (int)cx, my = (int)cy;
 
@@ -966,6 +983,40 @@ desktop(SDL_Renderer *ren, SDL_GameController *pad) {
                 confirm = 0;
             }
             click = 0;   /* consumed */
+        }
+
+        /* Context menu (R3 / right-click) swallows the next click. */
+        if (click && ctx) {
+            int cw2 = 240, ch2 = 5 * 42 + 12;
+            if (ctx_x + cw2 > SCREEN_W) ctx_x = SCREEN_W - cw2;
+            if (ctx_y + ch2 > SCREEN_H - TASK_H) ctx_y = SCREEN_H - TASK_H - ch2;
+            SDL_Rect cr = {ctx_x, ctx_y, cw2, ch2};
+            if (pt_in(cr, mx, my)) {
+                int idx = (my - ctx_y - 6) / 42;
+                Win *fw = NULL;
+                for (int i = 0; i < MAX_WIN; i++)
+                    if (wins[i].open && (!fw || wins[i].z > fw->z)) fw = &wins[i];
+                if (idx == 0) {                              /* Refresh */
+                    for (int i = 0; i < MAX_WIN; i++) if (wins[i].open) win_load(&wins[i]);
+                } else if (idx == 1) {                       /* New Folder */
+                    const char *tp = fw ? fw->path : "/data";
+                    char nm[256];
+                    if (text_input(ren, pad, "New folder name", "", nm, sizeof(nm)) && nm[0]) {
+                        char np[1024];
+                        snprintf(np, sizeof(np), "%s%s%s", tp,
+                                 strcmp(tp, "/") == 0 ? "" : "/", nm);
+                        int rc = mkdir(np, 0777);
+                        if (rc == 0) snprintf(notice, sizeof(notice), "New folder %s ok", nm);
+                        else snprintf(notice, sizeof(notice), "New folder FAILED errno %d", errno);
+                        if (fw) win_load(fw);
+                    }
+                } else if (idx == 2) {                       /* Show Desktop */
+                    for (int i = 0; i < MAX_WIN; i++) wins[i].open = 0;
+                } else if (idx == 3) {                       /* Empty Trash */
+                    confirm = 1;
+                }
+            }
+            ctx = 0; click = 0;
         }
 
         if (click) {
@@ -1043,8 +1094,9 @@ desktop(SDL_Renderer *ren, SDL_GameController *pad) {
                                 snprintf(np, sizeof(np), "%s%s%s", hit->path,
                                          strcmp(hit->path, "/") == 0 ? "" : "/", nm);
                                 int rc = mkdir(np, 0777);
-                                snprintf(notice, sizeof(notice), "New folder %s (%s)",
-                                         nm, rc == 0 ? "ok" : "FAILED");
+                                if (rc == 0) snprintf(notice, sizeof(notice), "New folder %s ok", nm);
+                                else snprintf(notice, sizeof(notice),
+                                              "New folder %s FAILED errno %d", nm, errno);
                                 win_load(hit);
                             }
                         } else if (within && b == 1 && f && !is_up) { /* Rename */
@@ -1197,10 +1249,14 @@ desktop(SDL_Renderer *ren, SDL_GameController *pad) {
         fill(ren, 12, SCREEN_H - TASK_H + 8, 150, TASK_H - 16, 0x7f, 0xd0, 0xff, 60);
         text(ren, 40, SCREEN_H - TASK_H + 18, 2, 0xe0, 0xf0, 0xff, "START");
         {
-            char tb[96];
-            snprintf(tb, sizeof(tb), "NAMI DESKTOP    IP %s", ip);
+            time_t now = time(NULL);
+            struct tm *tmv = localtime(&now);
+            char dt[64] = "";
+            if (tmv) strftime(dt, sizeof(dt), "%a %d/%m   %H:%M", tmv);
+            char tb[128];
+            snprintf(tb, sizeof(tb), "IP %s      %s", ip, dt);
             int lw = (int)strlen(tb) * 8 * 2;
-            text(ren, SCREEN_W - lw - 24, SCREEN_H - TASK_H + 18, 2, 0x8a, 0x9c, 0xc0, tb);
+            text(ren, SCREEN_W - lw - 24, SCREEN_H - TASK_H + 18, 2, 0x9a, 0xac, 0xd0, tb);
         }
 
         /* start menu */
@@ -1246,6 +1302,23 @@ desktop(SDL_Renderer *ren, SDL_GameController *pad) {
             text(ren, bx2 + 84, by2 + 166, 2, 0x20, 0x08, 0x08, "EMPTY");
             fill(ren, bx2 + 260, by2 + 150, 200, 50, 0x2a, 0x3e, 0x5c, 210);
             text(ren, bx2 + 338, by2 + 166, 2, 0xe0, 0xf0, 0xff, "NO");
+        }
+
+        /* context menu */
+        if (ctx) {
+            static const char *ci[] = {"Refresh", "New Folder", "Show Desktop",
+                                       "Empty Trash", "Close"};
+            int cw2 = 240, ch2 = 5 * 42 + 12, rx = ctx_x, ry = ctx_y;
+            if (rx + cw2 > SCREEN_W) rx = SCREEN_W - cw2;
+            if (ry + ch2 > SCREEN_H - TASK_H) ry = SCREEN_H - TASK_H - ch2;
+            fill(ren, rx, ry, cw2, ch2, 0x12, 0x1c, 0x30, 250);
+            fill(ren, rx, ry, cw2, 3, 0x7f, 0xd0, 0xff, 255);
+            for (int i = 0; i < 5; i++) {
+                int iy = ry + 6 + i * 42;
+                if (mx >= rx && mx < rx + cw2 && my >= iy && my < iy + 42)
+                    fill(ren, rx + 3, iy, cw2 - 6, 40, 0x7f, 0xd0, 0xff, 40);
+                text(ren, rx + 16, iy + 12, 2, 0xd8, 0xe4, 0xff, ci[i]);
+            }
         }
 
         draw_cursor(ren, mx, my);

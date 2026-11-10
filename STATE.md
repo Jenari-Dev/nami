@@ -23,7 +23,9 @@ ran it on the 13.20 console and confirmed the stated result._
 | M3c | game icons/pictures (icon0.png via SDL2_image) | **VERIFIED on TV (2026-11-10)** - covers render |
 | M6a | file browser (navigate, sizes) from FILES | **VERIFIED on TV (2026-11-10)** |
 | M6b | windowed desktop (cursor, taskbar, Start, folder windows) | **VERIFIED on TV (2026-11-10)** |
-| M6c | file ops: New/Rename/Copy/Cut/Paste + Trash (on-screen keyboard, empty-trash confirm) | **built + deployed, awaiting TV check** |
+| M6c | file ops: New/Rename/Copy/Cut/Paste + Trash (on-screen keyboard, empty-trash confirm) | built+deployed |
+| M6d | desktop controls: left-stick moves focused window, R3/right-click context menu, taskbar clock, New-folder errno | **built + deployed, awaiting TV check** |
+| M9 | DESIGN PASS: original Nami logo, real folder/category icons, multiMAN-style desktop, L1+R1 XMB layout cycle | requested, not started (original art only) |
 | M7 | home-screen tile (Elf Arsenal tile_autoinstall=1) | requested, not started |
 | M8 | auto-update + check-for-updates | requested, not started |
 | M3 | settings | not started |
