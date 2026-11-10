@@ -38,9 +38,9 @@
 #ifndef NAMI_VERSION
 #define NAMI_VERSION "0.1.0"
 #endif
-/* Update manifest endpoint (LAN dev server for now; point at NAS/GitHub later).
- * JSON: {"version":"x.y.z","ui":"http://.../nami_ui.elf","notes":"..."} */
-#define UPDATE_URL "http://192.168.3.35:8099/version.json"
+/* Update manifest on GitHub (raw). JSON:
+ * {"version":"x.y.z","ui":"<release-asset-url>","notes":"..."} */
+#define UPDATE_URL "https://raw.githubusercontent.com/Jenari-Dev/nami/main/version.json"
 
 #define FOCUS_X   260
 #define CAT_GAP   340
@@ -92,7 +92,7 @@ launch_title(const char *title_id) {
 }
 
 enum { KIND_INFO, KIND_PAYLOAD, KIND_TITLE, KIND_DIR, KIND_DESKTOP,
-       KIND_UPD_CHECK, KIND_UPD_INSTALL };
+       KIND_UPD_CHECK, KIND_UPD_INSTALL, KIND_ABOUT };
 
 typedef struct {
     char label[128];
@@ -419,6 +419,41 @@ install_update(void) {
     return rename("/data/nami/nami_ui.elf.new", "/data/nami/nami_ui.elf");
 }
 
+/* Background update worker so the UI never blocks on the network. */
+static volatile int g_upd_state = 0;   /* 0 idle, 1 checking, 2 installing */
+static volatile int g_install_ready = 0;
+static char g_upd_msg[160] = "";
+static int g_about = 0;                 /* About overlay toggle */
+
+static int
+upd_check_thread(void *d) {
+    (void)d;
+    g_upd_state = 1;
+    check_update();
+    if (g_upd_avail)
+        snprintf(g_upd_msg, sizeof(g_upd_msg),
+                 "Update available: v%s  (current v%s)", g_upd_ver, NAMI_VERSION);
+    else
+        snprintf(g_upd_msg, sizeof(g_upd_msg), "Nami is up to date (v%s)", NAMI_VERSION);
+    g_upd_state = 0;
+    return 0;
+}
+
+static int
+upd_install_thread(void *d) {
+    (void)d;
+    g_upd_state = 2;
+    if (!g_upd_avail) check_update();
+    if (g_upd_avail) {
+        if (install_update() == 0) g_install_ready = 1;
+        else snprintf(g_upd_msg, sizeof(g_upd_msg), "Update download FAILED");
+    } else {
+        snprintf(g_upd_msg, sizeof(g_upd_msg), "No update available (v%s)", NAMI_VERSION);
+    }
+    g_upd_state = 0;
+    return 0;
+}
+
 static void
 build_content(void) {
     load_title_names();
@@ -447,7 +482,7 @@ build_content(void) {
     add_item(&g_cats[CAT_DISC], "Drive status", "", KIND_INFO);
     add_item(&g_cats[CAT_DISC], "Activate drive (research)", "", KIND_INFO);
 
-    add_item(&g_cats[CAT_SETTINGS], "About Nami  v" NAMI_VERSION, "", KIND_INFO);
+    add_item(&g_cats[CAT_SETTINGS], "About Nami  v" NAMI_VERSION, "", KIND_ABOUT);
     add_item(&g_cats[CAT_SETTINGS], "Check for Update", "", KIND_UPD_CHECK);
     add_item(&g_cats[CAT_SETTINGS], "Install Update", "", KIND_UPD_INSTALL);
     add_item(&g_cats[CAT_SETTINGS], "Video", "", KIND_INFO);
@@ -1592,7 +1627,7 @@ main(void) {
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) != 0) return 1;
     fonts_load();
     curl_global_init(CURL_GLOBAL_DEFAULT);
-    check_update();   /* auto-check once at launch (6s timeout) */
+    SDL_CreateThread(upd_check_thread, "upd_boot", NULL);   /* auto-check, non-blocking */
     SDL_Window *win = SDL_CreateWindow(
         "Nami", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
         SCREEN_W, SCREEN_H, SDL_WINDOW_FULLSCREEN);
@@ -1651,6 +1686,7 @@ main(void) {
                     case SDL_CONTROLLER_BUTTON_A:          select = 1; break;
                     case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:  layout = (layout + 2) % 3; break;
                     case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: layout = (layout + 1) % 3; break;
+                    case SDL_CONTROLLER_BUTTON_B:          g_about = 0; break;
                     case SDL_CONTROLLER_BUTTON_START:      running = 0; break;
                     default: break;
                 }
@@ -1686,25 +1722,17 @@ main(void) {
                 } else if (it->kind == KIND_DESKTOP) {
                     desktop(ren, pad);
                 } else if (it->kind == KIND_UPD_CHECK) {
-                    check_update();
-                    if (g_upd_avail)
-                        snprintf(status, sizeof(status),
-                                 "Update available: v%s  (current v%s) - %s",
-                                 g_upd_ver, NAMI_VERSION, g_upd_notes);
-                    else
-                        snprintf(status, sizeof(status), "Nami is up to date (v%s)", NAMI_VERSION);
-                } else if (it->kind == KIND_UPD_INSTALL) {
-                    if (!g_upd_avail) check_update();
-                    if (g_upd_avail) {
-                        if (install_update() == 0) {
-                            request_launch("/data/nami/nami_ui.elf");  /* bootstrap relaunches new UI */
-                            running = 0;
-                        } else {
-                            snprintf(status, sizeof(status), "Update download FAILED");
-                        }
-                    } else {
-                        snprintf(status, sizeof(status), "No update available (v%s)", NAMI_VERSION);
+                    if (g_upd_state == 0) {
+                        g_upd_msg[0] = 0;
+                        SDL_CreateThread(upd_check_thread, "upd_check", NULL);
                     }
+                } else if (it->kind == KIND_UPD_INSTALL) {
+                    if (g_upd_state == 0) {
+                        g_upd_msg[0] = 0;
+                        SDL_CreateThread(upd_install_thread, "upd_install", NULL);
+                    }
+                } else if (it->kind == KIND_ABOUT) {
+                    g_about = !g_about;
                 } else {
                     snprintf(status, sizeof(status), "%s > %s   (coming later)",
                              c->name, it->label);
@@ -1713,6 +1741,12 @@ main(void) {
         }
 
         cat_scroll += ((float)sel_cat - cat_scroll) * 0.25f;
+
+        /* An install finished downloading on the worker thread: relaunch. */
+        if (g_install_ready) {
+            request_launch("/data/nami/nami_ui.elf");
+            running = 0;
+        }
 
         /* Load the selected game's cover0 when the selection changes. */
         if (sel_cat == CAT_GAMES) {
@@ -1829,6 +1863,40 @@ main(void) {
         fill(ren, bx, by, bw, 3, 0x2b, 0xd4, 0x7e, 255);
         fill(ren, bx + 20, by + 28, 12, 12, 0x2b, 0xd4, 0x7e, 255);
         text(ren, bx + 48, by + 27, 2, 0x9f, 0xf0, 0xc2, hud);
+
+        /* update status (non-blocking worker) */
+        {
+            const char *m = NULL;
+            if (g_upd_state == 1)      m = "Checking for update ...";
+            else if (g_upd_state == 2) m = "Downloading update ...";
+            else if (g_upd_msg[0])     m = g_upd_msg;
+            else if (status[0])        m = status;
+            if (m) text(ren, 60, SCREEN_H - 150, 2, 0x8a, 0x9c, 0xc0, m);
+        }
+
+        /* About overlay */
+        if (g_about) {
+            int ow = 900, oh = 440, ox = (SCREEN_W - ow) / 2, oy = (SCREEN_H - oh) / 2;
+            fill(ren, 0, 0, SCREEN_W, SCREEN_H, 0, 0, 0, 150);
+            fill(ren, ox, oy, ow, oh, 0x0e, 0x1a, 0x2e, 250);
+            fill(ren, ox, oy, ow, 4, 0x7f, 0xd0, 0xff, 255);
+            nami_mark(ren, ox + 40, oy + 36, 60, 44);
+            text(ren, ox + 120, oy + 40, 4, 0x9f, 0xd0, 0xff, "NAMI");
+            text(ren, ox + 40, oy + 120, 2, 0xcf, 0xdc, 0xf0,
+                 "A multiMAN-style all-in-one shell for the PS5.");
+            char vl[64];
+            snprintf(vl, sizeof(vl), "Version  v%s", NAMI_VERSION);
+            text(ren, ox + 40, oy + 170, 2, 0x8a, 0xe6, 0xb4, vl);
+            if (g_upd_avail) {
+                char ul[96];
+                snprintf(ul, sizeof(ul), "Update available: v%s   (%s)", g_upd_ver, g_upd_notes);
+                text(ren, ox + 40, oy + 210, 2, 0x9f, 0xf0, 0xc2, ul);
+            } else {
+                text(ren, ox + 40, oy + 210, 2, 0x72, 0x80, 0x98, "You are on the latest version.");
+            }
+            text(ren, ox + 40, oy + 280, 2, 0x8a, 0x9c, 0xc0, "GPL-3.0   -   github.com/Jenari-Dev/nami");
+            text(ren, ox + 40, oy + oh - 60, 2, 0x5f, 0x76, 0xa0, "Press Circle to close");
+        }
 
         SDL_RenderPresent(ren);
         SDL_Delay(16);
