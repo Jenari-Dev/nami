@@ -1,13 +1,14 @@
-/* Nami - PS5 homebrew shell UI (M3: real content + launch)
+/* Nami - PS5 homebrew shell UI (M3b: real names + launch)
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * Scans the console for installed titles and homebrew/payload ELFs and lists
- * them in the XMB. Selecting a payload writes a launch request that the
- * bootstrap consumes (hbldr_launch). Installed-game launch needs a system
- * call we still have to verify -> M3b. Visual theme is still placeholder.
+ * Installed titles now show their real names (from app.db's
+ * tbl_conceptmetadata) and launch via sceSystemServiceLaunchApp. Payloads
+ * launch via the bootstrap request. Icons/pictures are M3c. Theme is still
+ * placeholder.
  */
 #include <SDL.h>
 #include <SDL_test_font.h>
+#include <sqlite3.h>
 
 #include <sys/socket.h>
 #include <ifaddrs.h>
@@ -17,6 +18,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <ctype.h>
 #include <math.h>
 
 #define SCREEN_W 1920
@@ -28,14 +30,21 @@
 #define BAR_Y     330
 #define ITEM_Y0   430
 #define ITEM_DY   60
-#define VIS_ITEMS 9        /* rows drawn before scrolling the list */
+#define VIS_ITEMS 9
 #define MAX_ITEMS 128
 #define REQUEST_PATH "/data/ps5_homebrew_launcher_request.txt"
+#define APP_DB "/system_data/priv/mms/app.db"
+
+/* Provided by libSceSystemService (symbol present in the stub). */
+int sceSystemServiceLaunchApp(const char *titleId, const char *const *argv,
+                              void *param);
+
+enum { KIND_INFO, KIND_PAYLOAD, KIND_TITLE };
 
 typedef struct {
-    char label[96];
-    char path[512];
-    int  launchable;
+    char label[128];
+    char path[512];   /* ELF path (payload) or titleId (title) */
+    int  kind;
 } Item;
 
 typedef struct {
@@ -58,15 +67,90 @@ static Category g_cats[N_CATS] = {
     [CAT_POWER]    = {"POWER",    0xff, 0x8a, 0x8a, {{{0}}}, 0},
 };
 
+/* titleId -> display name map, loaded once from app.db. */
+#define MAX_NAMES 256
+typedef struct { char tid[16]; char name[96]; } TitleName;
+static TitleName g_names[MAX_NAMES];
+static int g_name_count;
+
+/* Pull a <4 letters><5 digits> title id out of a path if present. */
+static int
+tid_from_path(const char *s, char *out, size_t n) {
+    for (const char *p = s; *p; p++) {
+        int ok = 1;
+        for (int i = 0; i < 4; i++) {
+            if (!isupper((unsigned char)p[i])) { ok = 0; break; }
+        }
+        if (!ok) continue;
+        for (int i = 4; i < 9; i++) {
+            if (!isdigit((unsigned char)p[i])) { ok = 0; break; }
+        }
+        if (ok) {
+            snprintf(out, n, "%.9s", p);
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static void
-add_item(Category *c, const char *label, const char *path, int launchable) {
-    if (c->count >= MAX_ITEMS) {
+add_name(const char *tid, const char *name) {
+    if (!tid || !tid[0] || !name || g_name_count >= MAX_NAMES) {
         return;
     }
+    for (int i = 0; i < g_name_count; i++) {
+        if (strcmp(g_names[i].tid, tid) == 0) return;   /* first wins */
+    }
+    snprintf(g_names[g_name_count].tid, 16, "%s", tid);
+    snprintf(g_names[g_name_count].name, 96, "%s", name);
+    g_name_count++;
+}
+
+static const char *
+name_for(const char *tid) {
+    for (int i = 0; i < g_name_count; i++) {
+        if (strcmp(g_names[i].tid, tid) == 0) return g_names[i].name;
+    }
+    return NULL;
+}
+
+static void
+load_title_names(void) {
+    sqlite3 *db = NULL;
+    if (sqlite3_open_v2(APP_DB, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
+        if (db) sqlite3_close(db);
+        return;
+    }
+    sqlite3_stmt *st = NULL;
+    const char *q = "SELECT localConceptId, conceptName, icon0Info "
+                    "FROM tbl_conceptmetadata";
+    if (sqlite3_prepare_v2(db, q, -1, &st, NULL) == SQLITE_OK) {
+        while (sqlite3_step(st) == SQLITE_ROW) {
+            const char *lci = (const char *)sqlite3_column_text(st, 0);
+            const char *nm  = (const char *)sqlite3_column_text(st, 1);
+            const char *ic  = (const char *)sqlite3_column_text(st, 2);
+            char tid[16] = "";
+            if (lci && strncmp(lci, "cid:local:", 10) == 0) {
+                snprintf(tid, sizeof(tid), "%s", lci + 10);
+            } else if (ic) {
+                tid_from_path(ic, tid, sizeof(tid));
+            }
+            if (tid[0] && nm) {
+                add_name(tid, nm);
+            }
+        }
+        sqlite3_finalize(st);
+    }
+    sqlite3_close(db);
+}
+
+static void
+add_item(Category *c, const char *label, const char *path, int kind) {
+    if (c->count >= MAX_ITEMS) return;
     Item *it = &c->items[c->count++];
     snprintf(it->label, sizeof(it->label), "%s", label);
     snprintf(it->path, sizeof(it->path), "%s", path ? path : "");
-    it->launchable = launchable;
+    it->kind = kind;
 }
 
 static int
@@ -75,94 +159,84 @@ has_suffix(const char *s, const char *suf) {
     return ls >= lf && strcmp(s + ls - lf, suf) == 0;
 }
 
-/* Scan a directory for *.elf and add each as a launchable payload. */
 static void
 scan_elfs(Category *c, const char *dir) {
     DIR *d = opendir(dir);
-    if (!d) {
-        return;
-    }
+    if (!d) return;
     struct dirent *e;
     while ((e = readdir(d))) {
-        if (e->d_name[0] == '.' || !has_suffix(e->d_name, ".elf")) {
-            continue;
-        }
+        if (e->d_name[0] == '.' || !has_suffix(e->d_name, ".elf")) continue;
         char full[512];
         snprintf(full, sizeof(full), "%s/%s", dir, e->d_name);
-        add_item(c, e->d_name, full, 1);
+        add_item(c, e->d_name, full, KIND_PAYLOAD);
     }
     closedir(d);
 }
 
-/* Scan installed titles: user games/apps are CUSA* (PS4) or PPSA* (PS5);
- * skip system apps (NPXS), fakes and updates. Launch is M3b. */
 static void
 scan_titles(Category *c, const char *dir) {
     DIR *d = opendir(dir);
-    if (!d) {
-        return;
-    }
+    if (!d) return;
     struct dirent *e;
     while ((e = readdir(d))) {
         if (strncmp(e->d_name, "CUSA", 4) != 0 &&
             strncmp(e->d_name, "PPSA", 4) != 0) {
             continue;
         }
-        char tag[96];
-        const char *kind = (e->d_name[0] == 'C') ? "PS4" : "PS5";
-        snprintf(tag, sizeof(tag), "%s   [%s]", e->d_name, kind);
-        add_item(c, tag, e->d_name, 0);
+        const char *nm = name_for(e->d_name);
+        char label[128];
+        if (nm) {
+            snprintf(label, sizeof(label), "%s", nm);
+        } else {
+            snprintf(label, sizeof(label), "%s", e->d_name);
+        }
+        add_item(c, label, e->d_name, KIND_TITLE);
     }
     closedir(d);
 }
 
 static void
 build_content(void) {
+    load_title_names();
+
     scan_titles(&g_cats[CAT_GAMES], "/system_ex/app");
     if (g_cats[CAT_GAMES].count == 0) {
-        add_item(&g_cats[CAT_GAMES], "(no installed titles found)", "", 0);
+        add_item(&g_cats[CAT_GAMES], "(no installed titles found)", "", KIND_INFO);
     }
 
     scan_elfs(&g_cats[CAT_PAYLOADS], "/data/elf-arsenal/payloadmgr");
     scan_elfs(&g_cats[CAT_PAYLOADS], "/data");
     if (g_cats[CAT_PAYLOADS].count == 0) {
-        add_item(&g_cats[CAT_PAYLOADS], "(no payloads found)", "", 0);
+        add_item(&g_cats[CAT_PAYLOADS], "(no payloads found)", "", KIND_INFO);
     }
 
-    add_item(&g_cats[CAT_FILES], "Desktop (file browser) - M6", "", 0);
-    add_item(&g_cats[CAT_FILES], "/data", "", 0);
-    add_item(&g_cats[CAT_FILES], "/mnt/usb0", "", 0);
+    add_item(&g_cats[CAT_FILES], "Desktop (file browser) - M6", "", KIND_INFO);
+    add_item(&g_cats[CAT_FILES], "/data", "", KIND_INFO);
+    add_item(&g_cats[CAT_FILES], "/mnt/usb0", "", KIND_INFO);
 
-    add_item(&g_cats[CAT_NETWORK], "FTP server (running :2121)", "", 0);
-    add_item(&g_cats[CAT_NETWORK], "Web UI :8080 - M9", "", 0);
-    add_item(&g_cats[CAT_NETWORK], "IP info", "", 0);
+    add_item(&g_cats[CAT_NETWORK], "FTP server (running :2121)", "", KIND_INFO);
+    add_item(&g_cats[CAT_NETWORK], "Web UI :8080 - M9", "", KIND_INFO);
+    add_item(&g_cats[CAT_NETWORK], "IP info", "", KIND_INFO);
 
-    add_item(&g_cats[CAT_DISC], "Drive status", "", 0);
-    add_item(&g_cats[CAT_DISC], "Activate drive (research)", "", 0);
+    add_item(&g_cats[CAT_DISC], "Drive status", "", KIND_INFO);
+    add_item(&g_cats[CAT_DISC], "Activate drive (research)", "", KIND_INFO);
 
-    add_item(&g_cats[CAT_SETTINGS], "Video", "", 0);
-    add_item(&g_cats[CAT_SETTINGS], "Audio", "", 0);
-    add_item(&g_cats[CAT_SETTINGS], "System", "", 0);
-    add_item(&g_cats[CAT_SETTINGS], "About Nami", "", 0);
+    add_item(&g_cats[CAT_SETTINGS], "Video", "", KIND_INFO);
+    add_item(&g_cats[CAT_SETTINGS], "Audio", "", KIND_INFO);
+    add_item(&g_cats[CAT_SETTINGS], "System", "", KIND_INFO);
+    add_item(&g_cats[CAT_SETTINGS], "About Nami", "", KIND_INFO);
 
-    add_item(&g_cats[CAT_POWER], "Exit Nami", "", 0);
+    add_item(&g_cats[CAT_POWER], "Exit Nami", "", KIND_INFO);
 }
 
-/* Write a launch request for the bootstrap, which hbldr_launches it. */
 static void
 request_launch(const char *elf_path) {
     char cwd[512];
     snprintf(cwd, sizeof(cwd), "%s", elf_path);
     char *slash = strrchr(cwd, '/');
-    if (slash) {
-        *slash = 0;
-    } else {
-        snprintf(cwd, sizeof(cwd), "/data");
-    }
+    if (slash) *slash = 0; else snprintf(cwd, sizeof(cwd), "/data");
     FILE *fp = fopen(REQUEST_PATH, "w");
-    if (!fp) {
-        return;
-    }
+    if (!fp) return;
     fprintf(fp, "%s\n%s\n", elf_path, cwd);
     fclose(fp);
 }
@@ -171,13 +245,9 @@ static void
 local_ipv4(char *out, size_t n) {
     struct ifaddrs *ifs = NULL, *p;
     snprintf(out, n, "offline");
-    if (getifaddrs(&ifs) != 0) {
-        return;
-    }
+    if (getifaddrs(&ifs) != 0) return;
     for (p = ifs; p; p = p->ifa_next) {
-        if (!p->ifa_addr || p->ifa_addr->sa_family != AF_INET) {
-            continue;
-        }
+        if (!p->ifa_addr || p->ifa_addr->sa_family != AF_INET) continue;
         struct sockaddr_in *sin = (struct sockaddr_in *)p->ifa_addr;
         const char *ip = inet_ntoa(sin->sin_addr);
         if (ip && strcmp(ip, "127.0.0.1") != 0) {
@@ -221,9 +291,7 @@ int
 main(void) {
     build_content();
 
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) != 0) {
-        return 1;
-    }
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) != 0) return 1;
     SDL_Window *win = SDL_CreateWindow(
         "Nami", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
         SCREEN_W, SCREEN_H, SDL_WINDOW_FULLSCREEN);
@@ -284,8 +352,7 @@ main(void) {
             if (right && sel_cat < N_CATS - 1) { sel_cat++; sel_item = 0; top = 0; }
             if (up && sel_item > 0)            { sel_item--; }
             if (down && sel_item < g_cats[sel_cat].count - 1) { sel_item++; }
-
-            if (sel_item < top)             top = sel_item;
+            if (sel_item < top)              top = sel_item;
             if (sel_item >= top + VIS_ITEMS) top = sel_item - VIS_ITEMS + 1;
 
             if (select) {
@@ -293,12 +360,16 @@ main(void) {
                 Item *it = &c->items[sel_item];
                 if (sel_cat == CAT_POWER) {
                     running = 0;
-                } else if (it->launchable && it->path[0]) {
+                } else if (it->kind == KIND_PAYLOAD && it->path[0]) {
                     snprintf(status, sizeof(status), "Launching %s ...", it->label);
                     request_launch(it->path);
                     running = 0;   /* bootstrap launches it after we exit */
+                } else if (it->kind == KIND_TITLE && it->path[0]) {
+                    int rc = sceSystemServiceLaunchApp(it->path, NULL, NULL);
+                    snprintf(status, sizeof(status),
+                             "Launch %s (%s) rc=0x%x", it->label, it->path, rc);
                 } else {
-                    snprintf(status, sizeof(status), "%s > %s   (coming in a later milestone)",
+                    snprintf(status, sizeof(status), "%s > %s   (coming later)",
                              c->name, it->label);
                 }
             }
@@ -320,9 +391,7 @@ main(void) {
 
         for (int i = 0; i < N_CATS; i++) {
             int cx = FOCUS_X + (int)lroundf(((float)i - cat_scroll) * CAT_GAP);
-            if (cx < -120 || cx > SCREEN_W + 120) {
-                continue;
-            }
+            if (cx < -120 || cx > SCREEN_W + 120) continue;
             int active = (i == sel_cat);
             Category *c = &g_cats[i];
             draw_glyph(ren, cx, BAR_Y, active ? 34 : 24, active, c->r, c->g, c->b);
@@ -339,16 +408,17 @@ main(void) {
             int j = top + k;
             int iy = ITEM_Y0 + k * ITEM_DY;
             int on = (j == sel_item);
+            Item *it = &ac->items[j];
+            int launchable = (it->kind == KIND_PAYLOAD || it->kind == KIND_TITLE);
             if (on) {
                 fill(ren, FOCUS_X - 40, iy - 6, 900, ITEM_DY - 10,
                      ac->r, ac->g, ac->b, 36);
                 fill(ren, FOCUS_X - 40, iy - 6, 5, ITEM_DY - 10,
                      ac->r, ac->g, ac->b, 255);
             }
-            Item *it = &ac->items[j];
-            Uint8 tr = on ? 0xf0 : (it->launchable ? 0x9a : 0x80);
-            Uint8 tg = on ? 0xf6 : (it->launchable ? 0xa6 : 0x88);
-            Uint8 tb = on ? 0xff : (it->launchable ? 0xc8 : 0x98);
+            Uint8 tr = on ? 0xf0 : (launchable ? 0x9a : 0x80);
+            Uint8 tg = on ? 0xf6 : (launchable ? 0xa6 : 0x88);
+            Uint8 tb = on ? 0xff : (launchable ? 0xc8 : 0x98);
             text(ren, FOCUS_X - 12, iy, on ? 3 : 2, tr, tg, tb, it->label);
         }
         if (ac->count > VIS_ITEMS) {
@@ -371,9 +441,7 @@ main(void) {
         SDL_Delay(16);
     }
 
-    if (pad) {
-        SDL_GameControllerClose(pad);
-    }
+    if (pad) SDL_GameControllerClose(pad);
     SDL_DestroyRenderer(ren);
     SDL_DestroyWindow(win);
     SDL_Quit();
