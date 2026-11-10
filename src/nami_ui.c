@@ -17,6 +17,8 @@
 #include <arpa/inet.h>
 #include <dirent.h>
 #include <unistd.h>
+#include <sys/stat.h>
+#include <strings.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -77,7 +79,7 @@ launch_title(const char *title_id) {
     return (rc & 0x80000000u) ? (int)rc : 0;
 }
 
-enum { KIND_INFO, KIND_PAYLOAD, KIND_TITLE };
+enum { KIND_INFO, KIND_PAYLOAD, KIND_TITLE, KIND_DIR };
 
 typedef struct {
     char label[128];
@@ -329,9 +331,10 @@ build_content(void) {
         add_item(&g_cats[CAT_PAYLOADS], "(no payloads found)", "", KIND_INFO);
     }
 
-    add_item(&g_cats[CAT_FILES], "Desktop (file browser) - M6", "", KIND_INFO);
-    add_item(&g_cats[CAT_FILES], "/data", "", KIND_INFO);
-    add_item(&g_cats[CAT_FILES], "/mnt/usb0", "", KIND_INFO);
+    add_item(&g_cats[CAT_FILES], "Browse / (root)", "/", KIND_DIR);
+    add_item(&g_cats[CAT_FILES], "/data", "/data", KIND_DIR);
+    add_item(&g_cats[CAT_FILES], "/user", "/user", KIND_DIR);
+    add_item(&g_cats[CAT_FILES], "/mnt/usb0", "/mnt/usb0", KIND_DIR);
 
     add_item(&g_cats[CAT_NETWORK], "FTP server (running :2121)", "", KIND_INFO);
     add_item(&g_cats[CAT_NETWORK], "Web UI :8080 - M9", "", KIND_INFO);
@@ -403,6 +406,182 @@ draw_glyph(SDL_Renderer *r, int cx, int cy, int size, int active,
     fill(r, cx - s + 6, cy - s + 6, s * 2 - 12, s * 2 - 12, cr, cg, cb, a);
     if (active) {
         fill(r, cx - s, cy - s, s * 2, 3, 0xff, 0xff, 0xff, 200);
+    }
+}
+
+/* ---- file browser (FILES category) ---- */
+
+#define BR_MAX 1024
+typedef struct { char name[256]; int is_dir; long long size; } FEntry;
+static FEntry g_ents[BR_MAX];
+
+static void
+fmt_size(long long b, char *out, size_t n) {
+    static const char *u[] = {"B", "KB", "MB", "GB", "TB"};
+    double v = (double)b;
+    int i = 0;
+    while (v >= 1024.0 && i < 4) { v /= 1024.0; i++; }
+    if (i == 0) snprintf(out, n, "%lld B", b);
+    else        snprintf(out, n, "%.1f %s", v, u[i]);
+}
+
+static int
+fentry_cmp(const void *a, const void *b) {
+    const FEntry *x = a, *y = b;
+    if (strcmp(x->name, "..") == 0) return -1;
+    if (strcmp(y->name, "..") == 0) return 1;
+    if (x->is_dir != y->is_dir) return y->is_dir - x->is_dir;  /* dirs first */
+    return strcasecmp(x->name, y->name);
+}
+
+static int
+load_dir(const char *path, FEntry *out, int max) {
+    DIR *d = opendir(path);
+    if (!d) return 0;
+    int n = 0;
+    struct dirent *e;
+    while ((e = readdir(d)) && n < max) {
+        if (strcmp(e->d_name, ".") == 0) continue;
+        FEntry *f = &out[n];
+        snprintf(f->name, sizeof(f->name), "%s", e->d_name);
+        char full[1280];
+        snprintf(full, sizeof(full), "%s/%s", path, e->d_name);
+        struct stat st;
+        if (stat(full, &st) == 0) {
+            f->is_dir = S_ISDIR(st.st_mode) ? 1 : 0;
+            f->size = (long long)st.st_size;
+        } else {
+            f->is_dir = 0;
+            f->size = 0;
+        }
+        n++;
+    }
+    closedir(d);
+    qsort(out, n, sizeof(FEntry), fentry_cmp);
+    return n;
+}
+
+static void
+path_up(char *path) {
+    char *s = strrchr(path, '/');
+    if (s && s != path) *s = 0;
+    else                strcpy(path, "/");
+}
+
+static void
+browse(SDL_Renderer *ren, SDL_GameController *pad, const char *start) {
+    (void)pad;
+    char path[1024];
+    snprintf(path, sizeof(path), "%s", start);
+    int n = load_dir(path, g_ents, BR_MAX);
+    int sel = 0, top = 0, running = 1;
+    const int VIS = 15;
+    char info[320] = "";
+
+    while (running) {
+        SDL_Event e;
+        while (SDL_PollEvent(&e)) {
+            int up = 0, down = 0, enter = 0, back = 0;
+            if (e.type == SDL_QUIT) {
+                running = 0;
+            } else if (e.type == SDL_KEYDOWN) {
+                switch (e.key.keysym.sym) {
+                    case SDLK_ESCAPE: running = 0; break;
+                    case SDLK_UP:     up = 1; break;
+                    case SDLK_DOWN:   down = 1; break;
+                    case SDLK_RETURN: enter = 1; break;
+                    case SDLK_BACKSPACE: back = 1; break;
+                    default: break;
+                }
+            } else if (e.type == SDL_CONTROLLERBUTTONDOWN) {
+                switch (e.cbutton.button) {
+                    case SDL_CONTROLLER_BUTTON_DPAD_UP:   up = 1; break;
+                    case SDL_CONTROLLER_BUTTON_DPAD_DOWN: down = 1; break;
+                    case SDL_CONTROLLER_BUTTON_A:         enter = 1; break;
+                    case SDL_CONTROLLER_BUTTON_B:         back = 1; break;
+                    case SDL_CONTROLLER_BUTTON_START:     running = 0; break;
+                    default: break;
+                }
+            }
+
+            if (up && sel > 0) sel--;
+            if (down && sel < n - 1) sel++;
+            if (sel < top) top = sel;
+            if (sel >= top + VIS) top = sel - VIS + 1;
+
+            if (back) {
+                path_up(path);
+                n = load_dir(path, g_ents, BR_MAX);
+                sel = 0; top = 0; info[0] = 0;
+            }
+            if (enter && n > 0) {
+                FEntry *f = &g_ents[sel];
+                if (strcmp(f->name, "..") == 0) {
+                    path_up(path);
+                    n = load_dir(path, g_ents, BR_MAX);
+                    sel = 0; top = 0; info[0] = 0;
+                } else if (f->is_dir) {
+                    char np[1024];
+                    snprintf(np, sizeof(np), "%s%s%s",
+                             path, (strcmp(path, "/") == 0) ? "" : "/", f->name);
+                    snprintf(path, sizeof(path), "%s", np);
+                    n = load_dir(path, g_ents, BR_MAX);
+                    sel = 0; top = 0; info[0] = 0;
+                } else {
+                    char sz[32];
+                    fmt_size(f->size, sz, sizeof(sz));
+                    snprintf(info, sizeof(info), "%s   %s", f->name, sz);
+                }
+            }
+        }
+
+        for (int band = 0; band < SCREEN_H; band += 6) {
+            float t = (float)band / SCREEN_H;
+            Uint8 rr = (Uint8)(0x0a + (0x17 - 0x0a) * (1.0f - t));
+            Uint8 gg = (Uint8)(0x13 + (0x36 - 0x13) * (1.0f - t));
+            Uint8 bb = (Uint8)(0x22 + (0x5c - 0x22) * (1.0f - t));
+            fill(ren, 0, band, SCREEN_W, 6, rr, gg, bb, 255);
+        }
+
+        text(ren, 60, 50, 3, 0x8a, 0xe6, 0xb4, "FILES");
+        text(ren, 60, 112, 2, 0xc8, 0xe4, 0xff, path);
+        fill(ren, 60, 150, SCREEN_W - 120, 2, 0x8a, 0xe6, 0xb4, 60);
+
+        int y0 = 180, dy = 46;
+        int shown = n - top; if (shown > VIS) shown = VIS;
+        for (int k = 0; k < shown; k++) {
+            int j = top + k;
+            int iy = y0 + k * dy;
+            FEntry *f = &g_ents[j];
+            int on = (j == sel);
+            if (on) {
+                fill(ren, 54, iy - 4, SCREEN_W - 108, dy - 8, 0x8a, 0xe6, 0xb4, 34);
+                fill(ren, 54, iy - 4, 5, dy - 8, 0x8a, 0xe6, 0xb4, 255);
+            }
+            Uint8 cr = f->is_dir ? 0x9f : 0xc8;
+            Uint8 cg = f->is_dir ? 0xe0 : 0xc8;
+            Uint8 cb = f->is_dir ? 0xff : 0xd0;
+            char line[300];
+            snprintf(line, sizeof(line), "%s%s", f->is_dir ? "[ ] " : "    ", f->name);
+            text(ren, 80, iy, 2, cr, cg, cb, line);
+            if (!f->is_dir) {
+                char sz[32];
+                fmt_size(f->size, sz, sizeof(sz));
+                int sw = (int)strlen(sz) * 8 * 2;
+                text(ren, SCREEN_W - 120 - sw, iy, 2, 0x72, 0x80, 0x98, sz);
+            }
+        }
+
+        char foot[96];
+        snprintf(foot, sizeof(foot), "%d items   -   Cross enter   Circle up   Options back",
+                 n);
+        text(ren, 60, SCREEN_H - 120, 2, 0x7a, 0x8a, 0xb0, foot);
+        if (info[0]) {
+            text(ren, 60, SCREEN_H - 80, 2, 0x9f, 0xf0, 0xc2, info);
+        }
+
+        SDL_RenderPresent(ren);
+        SDL_Delay(16);
     }
 }
 
@@ -497,6 +676,8 @@ main(void) {
                         snprintf(status, sizeof(status),
                                  "%s (%s): launch rc=0x%x", it->label, it->path, rc);
                     }
+                } else if (it->kind == KIND_DIR && it->path[0]) {
+                    browse(ren, pad, it->path);
                 } else {
                     snprintf(status, sizeof(status), "%s > %s   (coming later)",
                              c->name, it->label);
