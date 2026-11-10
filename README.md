@@ -48,6 +48,8 @@ multiMAN had, plus the modern JB toolbox:
 - **XMB-style shell** launched from a home-screen tile
 - **On-screen HUD box** (bottom-right, PS3-JB style) showing IP + port
 - Everything also reachable from the **PC web UI**
+- **Disc-drive activation** (offline, never-paired) -- RESEARCH TRACK, not yet
+  known to be solvable; see `research/notes/01-disc-drive-activation.md`
 
 ## Roadmap
 
