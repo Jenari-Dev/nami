@@ -18,6 +18,12 @@ its own credentials and `hbldr_launch`es the Nami UI ELF into a graphics-
 capable app context (video-out + pad). This path requires the Homebrew
 Launcher base app (PPSA26344) installed on the console.
 
+## Installed-title launch (`src/nami_ui.c`)
+
+The `LncAppParam` struct layout and the `sceLncUtilLaunchApp` launch sequence
+(foreground user + skip-update flag) are derived from **LightningMods/Itemzflow**
+(GPL-3.0), https://github.com/LightningMods/Itemzflow.
+
 ## Toolchain / libraries
 
 Built with the **ps5-payload-dev SDK** and its pacbrew library set (SDL2,

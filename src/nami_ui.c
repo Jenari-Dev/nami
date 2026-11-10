@@ -18,6 +18,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <ctype.h>
 #include <math.h>
 
@@ -35,11 +36,44 @@
 #define REQUEST_PATH "/data/ps5_homebrew_launcher_request.txt"
 #define APP_DB "/system_data/priv/mms/app.db"
 
-/* Provided by libSceSystemService (symbols present in the stub). */
+/* Installed-title launch. LncAppParam layout + the launch sequence are from
+ * LightningMods/Itemzflow (GPL-3, same licence as Nami). Passing NULL for
+ * param yields 0x80940005; it must carry its size, the foreground user id,
+ * and the skip-update flag. */
+typedef struct {
+    uint32_t sz;
+    uint32_t user_id;
+    uint32_t app_opt;
+    uint64_t crash_report;
+    uint32_t check_flag;
+} LncAppParam;
+#define LNC_SKIP_SYSTEM_UPDATE_CHECK 2u
+
+int sceUserServiceGetForegroundUser(uint32_t *userId);
 int sceSystemServiceLaunchApp(const char *titleId, const char *const *argv,
-                              void *param);
+                              LncAppParam *param);
 int sceLncUtilLaunchApp(const char *titleId, const char *const *argv,
-                        void *param);
+                        LncAppParam *param);
+
+/* Returns 0 on success, else the (negative/0x80..) error code. */
+static int
+launch_title(const char *title_id) {
+    uint32_t user_id = 0;
+    sceUserServiceGetForegroundUser(&user_id);
+
+    LncAppParam param;
+    param.sz = sizeof(param);
+    param.user_id = user_id;
+    param.app_opt = 0;
+    param.crash_report = 0;
+    param.check_flag = LNC_SKIP_SYSTEM_UPDATE_CHECK;
+
+    unsigned rc = (unsigned)sceLncUtilLaunchApp(title_id, NULL, &param);
+    if (rc & 0x80000000u) {
+        rc = (unsigned)sceSystemServiceLaunchApp(title_id, NULL, &param);
+    }
+    return (rc & 0x80000000u) ? (int)rc : 0;
+}
 
 enum { KIND_INFO, KIND_PAYLOAD, KIND_TITLE };
 
@@ -418,16 +452,13 @@ main(void) {
                     request_launch(it->path);
                     running = 0;   /* bootstrap launches it after we exit */
                 } else if (it->kind == KIND_TITLE && it->path[0]) {
-                    int rc = sceSystemServiceLaunchApp(it->path, NULL, NULL);
-                    int rc2 = (rc != 0) ? sceLncUtilLaunchApp(it->path, NULL, NULL)
-                                        : 0;
-                    if (rc == 0 || rc2 == 0) {
+                    int rc = launch_title(it->path);
+                    if (rc == 0) {
                         snprintf(status, sizeof(status), "Launching %s ...", it->label);
                         running = 0;   /* release our slot so the title foregrounds */
                     } else {
                         snprintf(status, sizeof(status),
-                                 "%s (%s): svc=0x%x lnc=0x%x",
-                                 it->label, it->path, rc, rc2);
+                                 "%s (%s): launch rc=0x%x", it->label, it->path, rc);
                     }
                 } else {
                     snprintf(status, sizeof(status), "%s > %s   (coming later)",
