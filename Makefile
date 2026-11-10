@@ -11,6 +11,9 @@
 NAMI_SDK ?= /home/jenari/dev/emu/ps5-tools/ps5-payload-sdk-pacbrew
 override PS5_PAYLOAD_SDK := $(NAMI_SDK)
 
+# Nami version (override to build an "update" image: make VERSION=0.1.1)
+VERSION ?= 0.1.0
+
 PS5_HOST      ?= ps5
 PS5_FTP_PORT  ?= 2121
 ARSENAL_DIR   ?= /data/elf-arsenal/payloadmgr
@@ -37,7 +40,7 @@ COMMON_CFLAGS := -g -O1 -Wall -Wextra -Wno-unused-parameter -D__PS5__ -Isrc
 BOOT_CFLAGS := $(COMMON_CFLAGS) -DLAUNCHER_UI_PATH=\"$(NAMI_DIR)/$(UI_ELF)\"
 BOOT_LDADD  := -L$(HB)/lib -lSceSystemService -lSceUserService -lkernel_sys -lm -lz -lbz2 -liconv
 
-UI_CFLAGS := $(COMMON_CFLAGS) -I$(HB)/include -I$(HB)/include/SDL2
+UI_CFLAGS := $(COMMON_CFLAGS) -I$(HB)/include -I$(HB)/include/SDL2 -DNAMI_VERSION=\"$(VERSION)\"
 UI_LDADD  := \
 	$(HB)/lib/libSDL2main.a $(HB)/lib/libSDL2.a $(HB)/lib/libSDL2_test.a \
 	$(HB)/lib/libSDL2_image.a \
@@ -45,6 +48,7 @@ UI_LDADD  := \
 	$(HB)/lib/libwebp.a $(HB)/lib/libwebpdemux.a $(HB)/lib/libsharpyuv.a \
 	$(HB)/lib/libsqlite3.a \
 	-Wl,--start-group $(HB)/lib/libSDL2_ttf.a $(HB)/lib/libfreetype.a $(HB)/lib/libharfbuzz.a -Wl,--end-group \
+	-Wl,--start-group $(HB)/lib/libcurl.a $(HB)/lib/libssl.a $(HB)/lib/libcrypto.a $(HB)/lib/libpsl.a $(HB)/lib/libzstd.a -Wl,--end-group \
 	-lSceSystemService -lSceUserService \
 	-lSceVideoOut -lSceAudioOut -lScePad -lSceKeyboard -lSceImeDialog \
 	-lkernel_sys -lm -lz -lbz2 -liconv

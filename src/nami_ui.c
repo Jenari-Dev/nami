@@ -11,6 +11,7 @@
 #include <SDL_image.h>
 #include <SDL_ttf.h>
 #include <sqlite3.h>
+#include <curl/curl.h>
 
 #include <sys/socket.h>
 #include <ifaddrs.h>
@@ -33,6 +34,13 @@
 #define SCREEN_W 1920
 #define SCREEN_H 1080
 #define WEB_PORT 8080
+
+#ifndef NAMI_VERSION
+#define NAMI_VERSION "0.1.0"
+#endif
+/* Update manifest endpoint (LAN dev server for now; point at NAS/GitHub later).
+ * JSON: {"version":"x.y.z","ui":"http://.../nami_ui.elf","notes":"..."} */
+#define UPDATE_URL "http://192.168.3.35:8099/version.json"
 
 #define FOCUS_X   260
 #define CAT_GAP   340
@@ -83,7 +91,8 @@ launch_title(const char *title_id) {
     return (rc & 0x80000000u) ? (int)rc : 0;
 }
 
-enum { KIND_INFO, KIND_PAYLOAD, KIND_TITLE, KIND_DIR, KIND_DESKTOP };
+enum { KIND_INFO, KIND_PAYLOAD, KIND_TITLE, KIND_DIR, KIND_DESKTOP,
+       KIND_UPD_CHECK, KIND_UPD_INSTALL };
 
 typedef struct {
     char label[128];
@@ -320,6 +329,96 @@ scan_titles(Category *c, const char *dir) {
     closedir(d);
 }
 
+/* ---- update / version check (libcurl) ---- */
+static char g_upd_ver[32] = "", g_upd_ui[512] = "", g_upd_notes[160] = "";
+static int  g_upd_avail = 0;
+
+struct curl_mem { char *p; size_t n; };
+static size_t
+curl_wr_mem(void *d, size_t s, size_t n, void *u) {
+    struct curl_mem *m = u;
+    size_t add = s * n;
+    char *np = realloc(m->p, m->n + add + 1);
+    if (!np) return 0;
+    m->p = np; memcpy(m->p + m->n, d, add); m->n += add; m->p[m->n] = 0;
+    return add;
+}
+static int
+http_get_mem(const char *url, char **out) {
+    CURL *c = curl_easy_init();
+    if (!c) return -1;
+    struct curl_mem m = {malloc(1), 0};
+    if (m.p) m.p[0] = 0;
+    curl_easy_setopt(c, CURLOPT_URL, url);
+    curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, curl_wr_mem);
+    curl_easy_setopt(c, CURLOPT_WRITEDATA, &m);
+    curl_easy_setopt(c, CURLOPT_TIMEOUT, 6L);
+    curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(c, CURLOPT_SSL_VERIFYPEER, 0L);
+    curl_easy_setopt(c, CURLOPT_SSL_VERIFYHOST, 0L);
+    CURLcode r = curl_easy_perform(c);
+    curl_easy_cleanup(c);
+    if (r != CURLE_OK) { free(m.p); return -1; }
+    *out = m.p;
+    return 0;
+}
+static int
+http_get_file(const char *url, const char *path) {
+    FILE *fp = fopen(path, "wb");
+    if (!fp) return -1;
+    CURL *c = curl_easy_init();
+    if (!c) { fclose(fp); return -1; }
+    curl_easy_setopt(c, CURLOPT_URL, url);
+    curl_easy_setopt(c, CURLOPT_WRITEDATA, fp);
+    curl_easy_setopt(c, CURLOPT_TIMEOUT, 180L);
+    curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(c, CURLOPT_SSL_VERIFYPEER, 0L);
+    curl_easy_setopt(c, CURLOPT_SSL_VERIFYHOST, 0L);
+    CURLcode r = curl_easy_perform(c);
+    long code = 0;
+    curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &code);
+    curl_easy_cleanup(c);
+    fclose(fp);
+    return (r == CURLE_OK && (code == 200 || code == 0)) ? 0 : -1;
+}
+static int
+json_str(const char *j, const char *key, char *out, size_t n) {
+    char pat[64];
+    snprintf(pat, sizeof(pat), "\"%s\"", key);
+    const char *p = strstr(j, pat);
+    if (!p) return -1;
+    p = strchr(p + strlen(pat), ':');
+    if (!p) return -1;
+    p = strchr(p, '"');
+    if (!p) return -1;
+    p++;
+    size_t i = 0;
+    while (*p && *p != '"' && i + 1 < n) out[i++] = *p++;
+    out[i] = 0;
+    return 0;
+}
+static void
+check_update(void) {
+    g_upd_avail = 0;
+    char *j = NULL;
+    if (http_get_mem(UPDATE_URL, &j) != 0 || !j) return;
+    char ver[32] = "";
+    if (json_str(j, "version", ver, sizeof(ver)) == 0 && ver[0]) {
+        snprintf(g_upd_ver, sizeof(g_upd_ver), "%s", ver);
+        json_str(j, "ui", g_upd_ui, sizeof(g_upd_ui));
+        json_str(j, "notes", g_upd_notes, sizeof(g_upd_notes));
+        if (strcmp(ver, NAMI_VERSION) > 0) g_upd_avail = 1;
+    }
+    free(j);
+}
+static int
+install_update(void) {
+    if (!g_upd_avail || !g_upd_ui[0]) return -1;
+    if (http_get_file(g_upd_ui, "/data/nami/nami_ui.elf.new") != 0) return -1;
+    remove("/data/nami/nami_ui.elf");
+    return rename("/data/nami/nami_ui.elf.new", "/data/nami/nami_ui.elf");
+}
+
 static void
 build_content(void) {
     load_title_names();
@@ -348,10 +447,12 @@ build_content(void) {
     add_item(&g_cats[CAT_DISC], "Drive status", "", KIND_INFO);
     add_item(&g_cats[CAT_DISC], "Activate drive (research)", "", KIND_INFO);
 
+    add_item(&g_cats[CAT_SETTINGS], "About Nami  v" NAMI_VERSION, "", KIND_INFO);
+    add_item(&g_cats[CAT_SETTINGS], "Check for Update", "", KIND_UPD_CHECK);
+    add_item(&g_cats[CAT_SETTINGS], "Install Update", "", KIND_UPD_INSTALL);
     add_item(&g_cats[CAT_SETTINGS], "Video", "", KIND_INFO);
     add_item(&g_cats[CAT_SETTINGS], "Audio", "", KIND_INFO);
     add_item(&g_cats[CAT_SETTINGS], "System", "", KIND_INFO);
-    add_item(&g_cats[CAT_SETTINGS], "About Nami", "", KIND_INFO);
 
     add_item(&g_cats[CAT_POWER], "Exit Nami", "", KIND_INFO);
 }
@@ -1490,6 +1591,8 @@ main(void) {
 
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) != 0) return 1;
     fonts_load();
+    curl_global_init(CURL_GLOBAL_DEFAULT);
+    check_update();   /* auto-check once at launch (6s timeout) */
     SDL_Window *win = SDL_CreateWindow(
         "Nami", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
         SCREEN_W, SCREEN_H, SDL_WINDOW_FULLSCREEN);
@@ -1582,6 +1685,26 @@ main(void) {
                     browse(ren, pad, it->path);
                 } else if (it->kind == KIND_DESKTOP) {
                     desktop(ren, pad);
+                } else if (it->kind == KIND_UPD_CHECK) {
+                    check_update();
+                    if (g_upd_avail)
+                        snprintf(status, sizeof(status),
+                                 "Update available: v%s  (current v%s) - %s",
+                                 g_upd_ver, NAMI_VERSION, g_upd_notes);
+                    else
+                        snprintf(status, sizeof(status), "Nami is up to date (v%s)", NAMI_VERSION);
+                } else if (it->kind == KIND_UPD_INSTALL) {
+                    if (!g_upd_avail) check_update();
+                    if (g_upd_avail) {
+                        if (install_update() == 0) {
+                            request_launch("/data/nami/nami_ui.elf");  /* bootstrap relaunches new UI */
+                            running = 0;
+                        } else {
+                            snprintf(status, sizeof(status), "Update download FAILED");
+                        }
+                    } else {
+                        snprintf(status, sizeof(status), "No update available (v%s)", NAMI_VERSION);
+                    }
                 } else {
                     snprintf(status, sizeof(status), "%s > %s   (coming later)",
                              c->name, it->label);
@@ -1627,12 +1750,20 @@ main(void) {
         fill(ren, 0, bar_y - 2, SCREEN_W, 2, 0xff, 0xff, 0xff, 22);
 
         text(ren, 60, 60, 4, 0x9f, 0xd0, 0xff, "NAMI");
-        text(ren, 64, 120, 2, 0x5f, 0x76, 0xa0, "PS5 SHELL");
+        text(ren, 64, 120, 2, 0x5f, 0x76, 0xa0, "PS5 SHELL  v" NAMI_VERSION);
         {
             char li[32];
             snprintf(li, sizeof(li), "LAYOUT %d/3  L1 R1", layout + 1);
             int lw = (int)strlen(li) * 8 * 2;
             text(ren, SCREEN_W - lw - 40, 64, 2, 0x5f, 0x76, 0xa0, li);
+        }
+        if (g_upd_avail) {
+            char ub[128];
+            snprintf(ub, sizeof(ub), "UPDATE AVAILABLE  v%s   -   Settings > Install Update", g_upd_ver);
+            int uw = (int)strlen(ub) * 8;
+            fill(ren, SCREEN_W/2 - uw/2 - 24, 22, uw + 48, 38, 0x0e, 0x2a, 0x1d, 230);
+            fill(ren, SCREEN_W/2 - uw/2 - 24, 22, uw + 48, 3, 0x2b, 0xd4, 0x7e, 255);
+            text(ren, SCREEN_W/2 - uw/2, 30, 2, 0x9f, 0xf0, 0xc2, ub);
         }
 
         for (int i = 0; i < N_CATS; i++) {
