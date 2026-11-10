@@ -249,6 +249,16 @@ main(int argc, char **argv) {
             }
             usleep(100 * 1000);
         }
+
+        /* The UI may write a launch request and then exit immediately; if we
+         * fell out of the loop with a pending request, honor it here. */
+        if(file_exists(REQUEST_PATH) &&
+           read_request(requested_target, sizeof(requested_target),
+                        requested_cwd, sizeof(requested_cwd)) == 0) {
+            notify_text("request received (post-UI)");
+            clear_request_file();
+            hbldr_launch(requested_cwd, requested_target, -1, requested_argv, envp);
+        }
     }
 
     sceUserServiceTerminate();
