@@ -57,6 +57,15 @@ history and research/notes/ for deep dives.
   of borrowing the bigapp slot). Needs PKG tooling (param.json/sfo, eboot,
   icon0, fake-sign). This is the single task that delivers both "home-screen
   shortcut" and "it's a PKG, not an ELF". Next up.
+- **PKG Manager** (like PS3 multiMAN/Rebug): browse & install .pkg from USB and
+  the PS5 HDD, with select/queue. Install via sceAppInstUtil / the system pkg
+  installer (etaHEN/Elf Arsenal already install pkgs). Three sources like Rebug:
+  "Standard Package Location", "Package Folder", "PS5 HDD folder".
+  - As a Nami page/app: very doable.
+  - As a real TOP TAB on the PS5 home screen (before Games/Media): needs
+    SceShellUI (dashboard) plugin injection — advanced, later.
+  - Later: ISO folders (PS2/PSP/PS3 ISO) that list games and launch via the
+    system emulators (Rebug-style) — much later, emulator integration.
 - **Nami Payload Store** (like multiMAN's bewholeogy/pkg store): a manifest/repo
   of payloads (name, GitHub repo, asset glob, version, changelog, description) +
   an in-Nami browser that downloads from GitHub Releases over HTTPS and installs
