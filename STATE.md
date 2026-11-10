@@ -17,7 +17,8 @@ ran it on the 13.20 console and confirmed the stated result._
 |----|------|--------|
 | M0 | toast + HTTP status page to PC | **VERIFIED on 13.20 (2026-11-10)** |
 | M1 | SDL2 window + pad input | **VERIFIED on 13.20 (2026-11-10)** - first frame + HUD on TV, launched via bigapp from Elf Arsenal |
-| M2 | title list + launch | not started |
+| M2 | XMB nav (strip + items + HUD) | **built + deployed, awaiting TV check** |
+| M3 | title list + launch | not started |
 | M3 | settings | not started |
 | M4 | desktop / file manager | not started |
 | M5 | full web UI | not started |
