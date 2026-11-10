@@ -33,15 +33,35 @@ make test PS5_HOST=<ps5-ip>   # deploy to etaHEN elfldr (:9021)
 
 Then on the PC, open `http://<ps5-ip>:8080`.
 
+## Scope — the AIO PS5 toolbox
+
+Nami aims to be the multiMAN of the PS5 jailbreak: **one app** that replaces
+the pile of single-purpose ELFs you currently run one at a time. Everything
+multiMAN had, plus the modern JB toolbox:
+
+- Package **manager + PKG install queue** (install/background queue/track)
+- **Game dumping** and **backup/restore**
+- **Payload launcher** (run other ELFs from inside Nami)
+- **FTP** server built in
+- **Desktop**: file browser (copy/move/delete/edit), start menu, browsing
+- **All settings** in one place (fan, kstuff, patches, etc.)
+- **XMB-style shell** launched from a home-screen tile
+- **On-screen HUD box** (bottom-right, PS3-JB style) showing IP + port
+- Everything also reachable from the **PC web UI**
+
 ## Roadmap
 
-- **M0** pipeline: on-TV toast + status page served to PC  <- here
-- **M1** SDL2 window + controller input (XMB column/row nav)
-- **M2** installed-title list + launch (on-device RE)
-- **M3** settings
-- **M4** desktop: file browser (copy/move/delete/edit), start menu
-- **M5** full web UI mirroring the desktop
-- **M6+** FTP, dumping/backup, hex editor
+- **M0** pipeline: on-TV toast + status page served to PC  -- DONE (verified)
+- **M1** SDL2 full-screen window + controller input; HTTP server on own thread
+- **M2** XMB shell nav (columns/rows) + the IP/port HUD box
+- **M3** installed-title list + launch (on-device RE)
+- **M4** payload launcher (run other ELFs from inside Nami)
+- **M5** settings surface
+- **M6** desktop: file browser (copy/move/delete/edit), start menu
+- **M7** FTP server + PKG install queue + package manager
+- **M8** game dumping + backup/restore
+- **M9** full web UI mirroring the desktop
+- **M10+** hex editor, long tail, optional dashboard-injected overlay
 
 ## Credits / references
 
