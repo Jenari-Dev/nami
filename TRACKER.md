@@ -62,8 +62,10 @@ history and research/notes/ for deep dives.
   installer (etaHEN/Elf Arsenal already install pkgs). Three sources like Rebug:
   "Standard Package Location", "Package Folder", "PS5 HDD folder".
   - As a Nami page/app: very doable.
-  - As a real TOP TAB on the PS5 home screen (before Games/Media): needs
-    SceShellUI (dashboard) plugin injection — advanced, later.
+  - USER PREFERENCE: reachable as an option inside the PS5 SETTINGS menu (and
+    a home-screen page) — NOT a home-screen shortcut/tile. The Settings entry
+    (and a real top tab) need SceShellUI (dashboard) plugin injection — advanced.
+  - Order: build AFTER the XMB design + desktop are finished.
   - Later: ISO folders (PS2/PSP/PS3 ISO) that list games and launch via the
     system emulators (Rebug-style) — much later, emulator integration.
 - **Nami Payload Store** (like multiMAN's bewholeogy/pkg store): a manifest/repo
