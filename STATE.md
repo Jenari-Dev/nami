@@ -19,8 +19,8 @@ ran it on the 13.20 console and confirmed the stated result._
 | M1 | SDL2 window + pad input | **VERIFIED on 13.20 (2026-11-10)** - first frame + HUD on TV, launched via bigapp from Elf Arsenal |
 | M2 | XMB nav (strip + items + HUD) | **VERIFIED on TV (2026-11-10)** |
 | M3a | scan real payloads/titles + launch homebrew | **VERIFIED on TV (2026-11-10)** |
-| M3b | real names (app.db) + installed-game launch | **built + deployed, awaiting TV check** |
-| M3c | game icons/pictures (icon0.png via SDL2_image) | not started |
+| M3b | real names (app.db) + installed-game launch | **VERIFIED on TV (2026-11-10)** - CUSA01780 + Ghost of Yotei both booted; names correct (ASCII-transliterated) |
+| M3c | game icons/pictures (icon0.png via SDL2_image) | in progress |
 | M3 | settings | not started |
 | M4 | desktop / file manager | not started |
 | M5 | full web UI | not started |

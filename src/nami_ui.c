@@ -8,6 +8,7 @@
  */
 #include <SDL.h>
 #include <SDL_test_font.h>
+#include <SDL_image.h>
 #include <sqlite3.h>
 
 #include <sys/socket.h>
@@ -15,6 +16,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <dirent.h>
+#include <unistd.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -80,6 +82,7 @@ enum { KIND_INFO, KIND_PAYLOAD, KIND_TITLE };
 typedef struct {
     char label[128];
     char path[512];   /* ELF path (payload) or titleId (title) */
+    char icon[256];   /* icon0.png path for a title, else empty */
     int  kind;
 } Item;
 
@@ -105,7 +108,7 @@ static Category g_cats[N_CATS] = {
 
 /* titleId -> display name map, loaded once from app.db. */
 #define MAX_NAMES 256
-typedef struct { char tid[16]; char name[96]; } TitleName;
+typedef struct { char tid[16]; char name[96]; char icon[256]; } TitleName;
 static TitleName g_names[MAX_NAMES];
 static int g_name_count;
 
@@ -181,22 +184,36 @@ sanitize_ascii(char *dst, size_t n, const char *src) {
 }
 
 static void
-add_name(const char *tid, const char *name) {
+add_name(const char *tid, const char *name, const char *icon) {
     if (!tid || !tid[0] || !name || g_name_count >= MAX_NAMES) {
         return;
     }
     for (int i = 0; i < g_name_count; i++) {
         if (strcmp(g_names[i].tid, tid) == 0) return;   /* first wins */
     }
-    snprintf(g_names[g_name_count].tid, 16, "%s", tid);
-    sanitize_ascii(g_names[g_name_count].name, 96, name);
-    g_name_count++;
+    TitleName *t = &g_names[g_name_count++];
+    snprintf(t->tid, sizeof(t->tid), "%s", tid);
+    sanitize_ascii(t->name, sizeof(t->name), name);
+    t->icon[0] = 0;
+    if (icon && icon[0]) {
+        snprintf(t->icon, sizeof(t->icon), "%s", icon);
+        char *q = strchr(t->icon, '?');   /* drop the ?ts= cache-buster */
+        if (q) *q = 0;
+    }
 }
 
 static const char *
 name_for(const char *tid) {
     for (int i = 0; i < g_name_count; i++) {
         if (strcmp(g_names[i].tid, tid) == 0) return g_names[i].name;
+    }
+    return NULL;
+}
+
+static const char *
+icon_for(const char *tid) {
+    for (int i = 0; i < g_name_count; i++) {
+        if (strcmp(g_names[i].tid, tid) == 0) return g_names[i].icon;
     }
     return NULL;
 }
@@ -223,7 +240,7 @@ load_title_names(void) {
                 tid_from_path(ic, tid, sizeof(tid));
             }
             if (tid[0] && nm) {
-                add_name(tid, nm);
+                add_name(tid, nm, ic);
             }
         }
         sqlite3_finalize(st);
@@ -272,12 +289,27 @@ scan_titles(Category *c, const char *dir) {
         }
         const char *nm = name_for(e->d_name);
         char label[128];
-        if (nm) {
-            snprintf(label, sizeof(label), "%s", nm);
-        } else {
-            snprintf(label, sizeof(label), "%s", e->d_name);
-        }
+        snprintf(label, sizeof(label), "%s", nm ? nm : e->d_name);
         add_item(c, label, e->d_name, KIND_TITLE);
+
+        /* Attach the title's own icon0.png: from the DB, else probe the two
+         * standard on-disk locations. */
+        Item *it = &c->items[c->count - 1];
+        const char *ic = icon_for(e->d_name);
+        if (ic && ic[0] && access(ic, F_OK) == 0) {
+            snprintf(it->icon, sizeof(it->icon), "%s", ic);
+        } else {
+            char g[256];
+            snprintf(g, sizeof(g), "/system_ex/app/%s/sce_sys/icon0.png", e->d_name);
+            if (access(g, F_OK) == 0) {
+                snprintf(it->icon, sizeof(it->icon), "%s", g);
+            } else {
+                snprintf(g, sizeof(g), "/user/appmeta/%s/icon0.png", e->d_name);
+                if (access(g, F_OK) == 0) {
+                    snprintf(it->icon, sizeof(it->icon), "%s", g);
+                }
+            }
+        }
     }
     closedir(d);
 }
@@ -386,6 +418,7 @@ main(void) {
     SDL_Renderer *ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_SOFTWARE);
     if (!ren) { SDL_DestroyWindow(win); SDL_Quit(); return 3; }
     SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
+    IMG_Init(IMG_INIT_PNG);
 
     SDL_GameController *pad = NULL;
     for (int i = 0; i < SDL_NumJoysticks(); i++) {
@@ -406,6 +439,10 @@ main(void) {
              "D-pad move  -  Cross launch/select  -  Options exit");
     float cat_scroll = 0.0f;
     int running = 1;
+
+    /* Lazily-loaded cover for the selected game. */
+    SDL_Texture *cover = NULL;
+    int cover_cat = -1, cover_item = -1;
 
     while (running) {
         SDL_Event e;
@@ -469,6 +506,27 @@ main(void) {
 
         cat_scroll += ((float)sel_cat - cat_scroll) * 0.25f;
 
+        /* Load the selected game's cover0 when the selection changes. */
+        if (sel_cat == CAT_GAMES) {
+            if (cover_cat != sel_cat || cover_item != sel_item) {
+                if (cover) { SDL_DestroyTexture(cover); cover = NULL; }
+                Item *gi = &g_cats[CAT_GAMES].items[sel_item];
+                if (gi->icon[0]) {
+                    SDL_Surface *s = IMG_Load(gi->icon);
+                    if (s) {
+                        cover = SDL_CreateTextureFromSurface(ren, s);
+                        SDL_FreeSurface(s);
+                    }
+                }
+                cover_cat = sel_cat;
+                cover_item = sel_item;
+            }
+        } else if (cover) {
+            SDL_DestroyTexture(cover);
+            cover = NULL;
+            cover_cat = cover_item = -1;
+        }
+
         for (int band = 0; band < SCREEN_H; band += 6) {
             float t = (float)band / SCREEN_H;
             Uint8 rr = (Uint8)(0x0a + (0x17 - 0x0a) * (1.0f - t));
@@ -520,6 +578,22 @@ main(void) {
                  0x66, 0x72, 0x88, cnt);
         }
 
+        /* Selected game's own cover art (its icon0.png), right of the list.
+         * Falls back to a plain accent tile when a title has no icon. */
+        if (sel_cat == CAT_GAMES) {
+            int cw = 340, cx = SCREEN_W - cw - 140, cy = 440;
+            fill(ren, cx - 4, cy - 4, cw + 8, cw + 8, 0xff, 0xff, 0xff, 24);
+            if (cover) {
+                SDL_Rect dst = {cx, cy, cw, cw};
+                SDL_RenderCopy(ren, cover, NULL, &dst);
+            } else {
+                Category *gc = &g_cats[CAT_GAMES];
+                fill(ren, cx, cy, cw, cw, gc->r, gc->g, gc->b, 40);
+                text(ren, cx + cw / 2 - 16, cy + cw / 2 - 16, 4,
+                     gc->r, gc->g, gc->b, "?");
+            }
+        }
+
         text(ren, 60, SCREEN_H - 130, 2, 0x7a, 0x8a, 0xb0, status);
 
         int bw = 460, bh = 70;
@@ -533,7 +607,9 @@ main(void) {
         SDL_Delay(16);
     }
 
+    if (cover) SDL_DestroyTexture(cover);
     if (pad) SDL_GameControllerClose(pad);
+    IMG_Quit();
     SDL_DestroyRenderer(ren);
     SDL_DestroyWindow(win);
     SDL_Quit();

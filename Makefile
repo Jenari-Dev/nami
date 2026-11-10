@@ -40,6 +40,9 @@ BOOT_LDADD  := -L$(HB)/lib -lSceSystemService -lSceUserService -lkernel_sys -lm 
 UI_CFLAGS := $(COMMON_CFLAGS) -I$(HB)/include -I$(HB)/include/SDL2
 UI_LDADD  := \
 	$(HB)/lib/libSDL2main.a $(HB)/lib/libSDL2.a $(HB)/lib/libSDL2_test.a \
+	$(HB)/lib/libSDL2_image.a \
+	$(HB)/lib/libpng.a $(HB)/lib/libjpeg.a \
+	$(HB)/lib/libwebp.a $(HB)/lib/libwebpdemux.a $(HB)/lib/libsharpyuv.a \
 	$(HB)/lib/libsqlite3.a \
 	-lSceSystemService -lSceUserService \
 	-lSceVideoOut -lSceAudioOut -lScePad -lSceKeyboard -lSceImeDialog \
