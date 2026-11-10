@@ -49,6 +49,14 @@ history and research/notes/ for deep dives.
 - Real original icons in the category row (Games/Payloads/Files/Network/Disc/
   Settings/Power) and small icons on each option. (building now)
 - Match multiMAN's section structure (pending PS3 reference photos from user).
+  SHOTS NEEDED (for layout/structure only — icons will be original):
+  1. Main XMB with the FULL category row visible (all columns, in order).
+  2. Each category selected, showing its vertical option list (one per category).
+  3. Each XMB LAYOUT that L1/R1 cycles through (one shot per layout).
+  4. The game-info panel (cover + title + description + button hints).
+  5. Any context/sub menus (e.g. the Refresh/Create-Folder popup).
+  6. The Settings section(s) with their options.
+  7. The file-manager / mMM desktop mode.
 
 ## 📋 Planned
 - **Home-screen tile / make Nami a PKG (like multiMAN)**: multiMAN was a PKG;
